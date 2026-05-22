@@ -12,10 +12,13 @@ class ServerConfigTests : public QObject
 private Q_SLOTS:
   void equalityCheck();
   void equalityCheck_diff_options();
+  void equalityCheck_diff_forwardTouchscreenEvents();
   void equalityCheck_diff_alias();
   void equalityCheck_diff_filters();
   //  void equalityCheck_diff_address();
   void equalityCheck_diff_neighbours1();
   void equalityCheck_diff_neighbours2();
   void equalityCheck_diff_neighbours3();
+  void forwardTouchscreenEvents_roundTrip();
+  void forwardTouchscreenEvents_parseNameAndValue();
 };

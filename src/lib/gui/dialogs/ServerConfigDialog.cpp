@@ -105,6 +105,10 @@ ServerConfigDialog::ServerConfigDialog(QWidget *parent, ServerConfig &config)
 
   connect(ui->cbRelativeMouseMoves, &QCheckBox::toggled, this, &ServerConfigDialog::toggleRelativeMouseMoves);
   connect(ui->cbEnableClipboard, &QCheckBox::toggled, this, &ServerConfigDialog::toggleClipboard);
+  connect(
+      ui->cbForwardTouchscreenEvents, &QCheckBox::toggled, this,
+      &ServerConfigDialog::toggleForwardTouchscreenEvents
+  );
 
   connect(ui->btnBrowseConfigFile, &QPushButton::clicked, this, &ServerConfigDialog::browseConfigFile);
 
@@ -150,6 +154,8 @@ ServerConfigDialog::ServerConfigDialog(QWidget *parent, ServerConfig &config)
   auto clipboardSharingSizeM = static_cast<int>(serverConfig().clipboardSharingSize() / 1024);
   ui->sbClipboardSizeLimit->setValue(clipboardSharingSizeM);
   ui->sbClipboardSizeLimit->setEnabled(serverConfig().clipboardSharing());
+
+  ui->cbForwardTouchscreenEvents->setChecked(serverConfig().forwardTouchscreenEvents());
 
   for (const Hotkey &hotkey : std::as_const(serverConfig().hotkeys()))
     ui->listHotkeys->addItem(hotkey.text());
@@ -335,6 +341,12 @@ void ServerConfigDialog::toggleClipboard(bool enabled)
     ui->sbClipboardSizeLimit->setValue(size ? size : 1);
   }
   serverConfig().setClipboardSharing(enabled);
+  onChange();
+}
+
+void ServerConfigDialog::toggleForwardTouchscreenEvents(bool enabled)
+{
+  serverConfig().setForwardTouchscreenEvents(enabled);
   onChange();
 }
 

@@ -125,6 +125,10 @@ public:
   {
     return m_ClipboardSharingSize;
   }
+  bool forwardTouchscreenEvents() const
+  {
+    return m_ForwardTouchscreenEvents;
+  }
   static size_t defaultClipboardSharingSize();
 
   bool save(const QString &fileName) const;
@@ -222,6 +226,10 @@ private:
   void setConfigFile(const QString &configFile) const;
   void setUseExternalConfig(bool useExternalConfig) const;
   size_t setClipboardSharingSize(size_t size);
+  void setForwardTouchscreenEvents(bool on)
+  {
+    m_ForwardTouchscreenEvents = on;
+  }
   QList<bool> &switchCorners()
   {
     return m_SwitchCorners;
@@ -256,6 +264,7 @@ private:
   int m_Columns;
   int m_Rows;
   size_t m_ClipboardSharingSize = defaultClipboardSharingSize();
+  bool m_ForwardTouchscreenEvents = false;
 };
 
 QTextStream &operator<<(QTextStream &outStream, const ServerConfig &config);

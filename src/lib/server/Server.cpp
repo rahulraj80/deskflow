@@ -1124,6 +1124,11 @@ void Server::processOptions()
       } else {
         m_maximumClipboardSize = static_cast<size_t>(value);
       }
+    } else if (id == kOptionForwardTouchscreenEvents) {
+      m_forwardTouchscreenEvents = (value != 0);
+      if (m_forwardTouchscreenEvents) {
+        LOG_INFO("touchscreen event forwarding is enabled");
+      }
     }
   }
   if (m_relativeMoves && !newRelativeMoves) {

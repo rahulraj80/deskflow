@@ -65,6 +65,7 @@ protected:
 
   void toggleClipboard(bool enabled);
   void setClipboardLimit(int limit);
+  void toggleForwardTouchscreenEvents(bool enabled);
 
   void toggleHeartbeat(bool enabled);
   void setHeartbeat(int rate);

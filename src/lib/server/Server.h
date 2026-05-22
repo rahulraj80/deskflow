@@ -472,4 +472,5 @@ private:
   bool m_defaultLockToScreenState = false;
   bool m_disableLockToScreen = false;
   bool m_enableClipboard = true;
+  bool m_forwardTouchscreenEvents = false;
 };

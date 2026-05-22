@@ -676,6 +676,8 @@ void Config::readSectionOptions(ConfigReadContext &s)
       addOption("", kOptionClipboardSharing, s.parseBoolean(value));
     } else if (name == "clipboardSharingSize") {
       addOption("", kOptionClipboardSharingSize, s.parseInt(value));
+    } else if (name == "forwardTouchscreenEvents") {
+      addOption("", kOptionForwardTouchscreenEvents, s.parseBoolean(value));
     } else {
       handled = false;
     }
@@ -1260,6 +1262,9 @@ const char *Config::getOptionName(OptionID id)
   if (id == kOptionClipboardSharingSize) {
     return "clipboardSharingSize";
   }
+  if (id == kOptionForwardTouchscreenEvents) {
+    return "forwardTouchscreenEvents";
+  }
   return nullptr;
 }
 
@@ -1269,7 +1274,7 @@ std::string Config::getOptionValue(OptionID id, OptionValue value)
       id == kOptionScreenSwitchNeedsShift || id == kOptionScreenSwitchNeedsControl ||
       id == kOptionScreenSwitchNeedsAlt || id == kOptionXTestXineramaUnaware || id == kOptionRelativeMouseMoves ||
       id == kOptionWin32KeepForeground || id == kOptionScreenPreserveFocus || id == kOptionClipboardSharing ||
-      id == kOptionClipboardSharingSize) {
+      id == kOptionClipboardSharingSize || id == kOptionForwardTouchscreenEvents) {
     return (value != 0) ? "true" : "false";
   }
   if (id == kOptionModifierMapForShift || id == kOptionModifierMapForControl || id == kOptionModifierMapForAlt ||

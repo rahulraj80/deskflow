@@ -524,6 +524,16 @@
            </layout>
           </item>
           <item>
+           <widget class="QCheckBox" name="cbForwardTouchscreenEvents">
+            <property name="text">
+             <string>Forward touchscreen events</string>
+            </property>
+            <property name="checked">
+             <bool>false</bool>
+            </property>
+           </widget>
+          </item>
+          <item>
            <spacer name="verticalSpacer_6">
             <property name="orientation">
              <enum>Qt::Orientation::Vertical</enum>
