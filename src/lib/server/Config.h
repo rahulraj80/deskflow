@@ -449,6 +449,18 @@ public:
   static std::string formatInterval(const Interval &);
   //@}
 
+  //! Get option name
+  /*!
+  Returns the name of an option.
+  */
+  static const char *getOptionName(OptionID);
+
+  //! Get option value
+  /*!
+  Returns an option value as a string.
+  */
+  static std::string getOptionValue(OptionID, OptionValue);
+
 private:
   void readSection(ConfigReadContext &);
   void readSectionOptions(ConfigReadContext &);
@@ -464,8 +476,6 @@ private:
   );
 
   void parseScreens(const ConfigReadContext &, const std::string_view &, std::set<std::string> &screens) const;
-  static const char *getOptionName(OptionID);
-  static std::string getOptionValue(OptionID, OptionValue);
 
 private:
   CellMap m_map;
