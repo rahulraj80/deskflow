@@ -1,0 +1,1581 @@
+diff --git a/notes/BUG_9770_TOUCHSCREEN_FORWARDING.md b/notes/BUG_9770_TOUCHSCREEN_FORWARDING.md
+new file mode 100644
+index 0000000..cdd9a2a
+--- /dev/null
++++ b/notes/BUG_9770_TOUCHSCREEN_FORWARDING.md
+@@ -0,0 +1,143 @@
++# Bug #9770 — Touchscreen Input Forwarding
++
++## Problem Statement
++
++When the mouse cursor is on the Linux (Wayland/libei) client machine, touchscreen input on the Windows server machine is incorrectly forwarded to the Linux client instead of being handled locally by Windows. This prevents unlocking the Windows machine via its on-screen keyboard/touchscreen.
++
++## Setup
++
++- **Windows machine** = Deskflow server (has touchscreen)
++- **Linux machine** = Deskflow client (Fedora 44, KDE Plasma, Wayland, has touchscreen)
++- Both machines have touchscreens
++
++## Observed Behavior
++
++| Scenario | Mouse on | Touch on | Result |
++|----------|----------|----------|--------|
++| 1 | Windows server | Linux client | WORKS — keystrokes stay on Linux |
++| 2 | Linux client | Windows server | BROKEN — keystrokes forwarded to Linux instead of staying on Windows |
++
++## Root Cause Analysis
++
++When the mouse is on the Linux client, the Windows server's screen is "inactive" (the server's `m_active` points to the client). The Windows server captures touch input events via the Windows hook chain, but the deskflow server forwards these events to the Linux client instead of letting Windows handle them locally.
++
++The key issue is in how the server handles input events from its own (now inactive) screen. Touch events from the server's physical screen should be handled locally when the active screen is a client.
++
++### Key Findings
++
++1. **EiScreen.cpp (Linux client)** — Line 812 explicitly says "we don't care about touch" — `EI_DEVICE_CAP_TOUCH` is NOT bound in the libei seat capabilities. The Linux client does NOT process touch events at all.
++
++2. **MSWindowsScreen (Windows server)** — DOES receive touch events through the Windows hook chain (`MSWindowsHook.cpp`).
++
++3. **Server.cpp event routing** — Determines whether events are handled locally or forwarded to the client. When `m_active` points to a client, events from the server's own screen are forwarded to that client.
++
++4. **The fundamental problem** — There is no mechanism to distinguish between:
++   - Touch-generated key events (from on-screen keyboard) that should stay on the server
++   - Physical keyboard events that should be forwarded to the client
++
++## Investigation Path
++
++### Files Examined
++
++| File | Role |
++|------|------|
++| `src/lib/server/Server.cpp` | Main server event routing |
++| `src/lib/server/Server.h` | Server class definition |
++| `src/lib/server/PrimaryClient.cpp` | Server's local screen handler |
++| `src/lib/platform/MSWindowsScreen.cpp` | Windows screen (touch input source) |
++| `src/lib/platform/MSWindowsHook.cpp` | Windows low-level keyboard hook |
++| `src/lib/platform/EiScreen.cpp` | Linux Wayland/libei screen |
++| `src/lib/platform/EiEventQueueBuffer.cpp` | Wayland event queue |
++| `src/lib/deskflow/IScreen.h` | Screen interface |
++| `src/lib/base/EventTypes.h` | Event type definitions |
++
++### Key Functions
++
++- `Server::handleKeyDownEvent()` — how key events are routed
++- `Server::handleButtonEvent()` — how button events are routed
++- `Server::handleMotionEvent()` — how motion events are routed
++- `PrimaryClient::enter()` / `PrimaryClient::leave()` — screen activation/deactivation
++- `MSWindowsHook::keyboardHook()` — Windows low-level keyboard hook that captures input
++
++## Solution Approach
++
++The fix requires two parts:
++
++### Part 1: Config Option (IMPLEMENTED in patch)
++
++Add a new server option `forwardTouchscreenEvents` that controls whether touch-generated input events should be forwarded to clients.
++
++**New option:** `forwardTouchscreenEvents` (OptionID: `FTSC`)
++- **Default:** `false` (touch events stay on the server — the correct behavior)
++- **Config file syntax:** `forwardTouchscreenEvents = true/false`
++- **GUI:** New checkbox "Forward touchscreen events" in Server Config dialog
++
++**Files changed:**
++- `src/lib/deskflow/OptionTypes.h` — Added `kOptionForwardTouchscreenEvents`
++- `src/lib/server/Config.cpp` — Added parsing, name, and value mapping
++- `src/lib/server/Server.h` — Added `m_forwardTouchscreenEvents` member
++- `src/lib/server/Server.cpp` — Added option processing in `processOptions()`
++- `src/lib/gui/config/ServerConfig.h` — Added getter/setter and member variable
++- `src/lib/gui/config/ServerConfig.cpp` — Added serialization, equality, commit/recall
++- `src/lib/gui/dialogs/ServerConfigDialog.h` — Added toggle slot declaration
++- `src/lib/gui/dialogs/ServerConfigDialog.cpp` — Added toggle handler and init
++- `src/lib/gui/dialogs/ServerConfigDialog.ui` — Added checkbox widget
++- `src/unittests/server/ServerConfigTests.h` — Added 3 new test declarations
++- `src/unittests/server/ServerConfigTests.cpp` — Added 3 new test implementations
++
++### Part 2: Hook Behavior Change (IMPLEMENTED)
++
++Modified `MSWindowsHook.cpp` to check `g_forwardTouchscreenEvents` before forwarding touch-generated key events.
++
++When the option is `false` (default):
++- Touch-generated key events (identified by `LLKHF_INJECTED` flag in the keyboard hook) are consumed by the server and NOT forwarded to the client
++- Physical keyboard events continue to be forwarded normally
++- The `LLKHF_INJECTED` flag is encoded into `lParam` bit 30 for downstream use
++
++When the option is `true`:
++- Current behavior is preserved (all events forwarded)
++
++**Files changed:**
++- `src/lib/platform/MSWindowsHook.h` — Added `setForwardTouchscreenEvents()` declaration
++- `src/lib/platform/MSWindowsHook.cpp` — Added global, setter, filtering in `keyboardLLHook`, injected flag encoding
++- `src/lib/platform/MSWindowsDesks.cpp` — Added option handling in `setOptions()`
++
++### Part 3: EiScreen Touch Support (IMPLEMENTED)
++
++Added touch support to the Linux client by binding `EI_DEVICE_CAP_TOUCH` in the libei seat capabilities for non-primary screens.
++
++**File changed:**
++- `src/lib/platform/EiScreen.cpp` — Added `EI_DEVICE_CAP_TOUCH` binding for non-primary screens
++
++**Note:** Touch event handlers (`EI_EVENT_TOUCH_DOWN/MOTION/UP`) exist but are currently empty (silent discard). Full touch event processing (converting to deskflow mouse events) is a future enhancement.
++
++## Test Plan
++
++### Unit Tests (IMPLEMENTED)
++
++Three new tests in `ServerConfigTests`:
++
++1. **equalityCheck_diff_forwardTouchscreenEvents** — Verifies that two Config objects differing only in `kOptionForwardTouchscreenEvents` are not equal
++2. **forwardTouchscreenEvents_roundTrip** — Verifies set/get/remove on global and per-screen options
++3. **forwardTouchscreenEvents_parseNameAndValue** — Verifies `getOptionName` returns "forwardTouchscreenEvents" and `getOptionValue` maps 1→"true", 0→"false"
++
++### Integration Tests (MANUAL — Windows required)
++
++1. Windows server + Linux client, touch on Windows → keystrokes should stay on Windows
++2. Windows server + Linux client, physical keyboard → keystrokes should forward to client
++3. Toggle `forwardTouchscreenEvents` option → behavior should change accordingly
++
++## Status
++
++| Component | Status |
++|-----------|--------|
++| Config option infrastructure | DONE (in patch) |
++| Unit tests | DONE (in patch) |
++| MSWindowsHook.cpp behavior change | DONE |
++| EiScreen touch support | DONE (seat binding) |
++| Manual testing on Windows | PENDING |
++
++## Related
++
++- GitHub issue: #9770
++- Patch file: `notes/patches/forward-touchscreen-events.patch`
+diff --git a/notes/CONTINUATION.md b/notes/CONTINUATION.md
+new file mode 100644
+index 0000000..eac1f85
+--- /dev/null
++++ b/notes/CONTINUATION.md
+@@ -0,0 +1,28 @@
++# CONTINUATION.md — Session Continuity
++
++This file records what was being done and how to resume if interrupted.
++**Always read from the BOTTOM** — the most recent entry is the one to follow.
++
++---
++
++## 2026-05-23 — CI Passing, All Code Complete
++
++**Status:** All code changes complete. Local build passes. CI lint-clang now passing.
++
++**Commits pushed (6 total):**
++1. `8db843d` — Config option infrastructure + tests (Part 1)
++2. `1fd3fc4` — Hook behavior change + EiScreen touch support (Parts 2 & 3)
++3. `cff8285` — Fix build errors (type cast, public access)
++4. `cb9a053` — Fix clang-format style (EiScreen.cpp)
++5. `4a58f74` — Fix clang-format in ALL source files (ServerConfig.cpp, ServerConfigDialog.cpp)
++6. `a8cf9dd` — Update CONTINUATION.md
++
++**CI status:**
++- lint-clang: ✅ PASSING (was failing on formatting, fixed with clang-format 20.1.0)
++- CodeQL: in progress
++- Main build: queued (will run after lint-clang passes)
++
++**What to do next:**
++1. Wait for full CI to complete
++2. Check main build results across all platforms
++3. Manual Windows testing with touchscreen still needed (can't be automated)
+diff --git a/notes/CONVERSATION_LOG.md b/notes/CONVERSATION_LOG.md
+new file mode 100644
+index 0000000..0639829
+--- /dev/null
++++ b/notes/CONVERSATION_LOG.md
+@@ -0,0 +1,62 @@
++# CONVERSATION_LOG.md — Decisions and Findings
++
++This file records important decisions, findings, and user comments for future reference.
++
++---
++
++## 2026-05-21
++
++### Project Setup
++- User forked the deskflow repo to make fixes
++- Added CLAUDE.md as the project's "bible" — 12-rule coding discipline + safety protocol
++- Copied notes/ folder from another project (PSync Health) — needed adaptation to deskflow
++- Adapted all notes files for deskflow (C++/CMake project, not TypeScript/Next.js)
++
++### Bug Report: Touchscreen Input Forwarding (#9770)
++- **Issue:** When mouse is on Linux client, Windows server touchscreen input is forwarded to Linux instead of being handled locally
++- **Impact:** Cannot unlock Windows machine via on-screen keyboard when mouse is on client
++- **Platforms affected:** Windows server, Linux (Wayland) client
++- **Key finding:** EiScreen.cpp line 812 explicitly says "we don't care about touch" — EI_DEVICE_CAP_TOUCH is not bound
++- **Root cause hypothesis:** Server's event routing forwards touch-generated key events to client when server screen is inactive
++
++### OpenRouter Model Visibility Question
++- User asked why Hermes shows fewer OpenRouter models than opencode
++- Root cause: Hermes uses a curated model catalog from Nous Research, not OpenRouter's full /models API
++- Solutions discussed: add OpenRouter as custom provider, disable model catalog, or manually enumerate models
++- **Deferred:** User said "we will come to model visibility in some time"
++
++---
++
++## 2026-05-22
++
++### Session Restart and Context Recovery
++- Session was restarted on a new machine (x86_64)
++- User asked to read CLAUDE.md, notes/ folder, and patch file to recover context
++- All context successfully recovered from files
++
++### Architecture Decision: No Downgrades
++- **Decision:** Never downgrade dependency requirements to match system packages
++- **Rationale:** The project requires Qt 6.7.0+, libei >= 1.3, libportal >= 0.9.1
++- Ubuntu 24.04 ships older versions (Qt 6.4.2, libei 1.2.1, libportal 0.7.1)
++- **Correct approach:** Install required versions from upstream (aqtinstall for Qt, source build for libei/libportal)
++- **User explicitly said:** "Do not downgrade anything" and "Please do not downgrade anything"
++
++### Patch File Created
++- Created `notes/patches/forward-touchscreen-events.patch` containing all changes from previous session
++- Patch includes: config option infrastructure, GUI changes, server changes, unit tests
++- Patch does NOT include: MSWindowsHook.cpp behavior change, EiScreen touch support (still pending)
++
++### Bug Documentation
++- Created `notes/BUG_9770_TOUCHSCREEN_FORWARDING.md` with full bug story
++- Documents: problem, setup, observed behavior, root cause, investigation path, solution approach, test plan, status
++
++### Strategy: Push First, Build Locally in Parallel
++- User's plan: Push patch to GitHub first so CI starts running
++- Meanwhile, set up local build environment
++- By the time local build tools are installed, GitHub Actions may have feedback
++- **Benefit:** Parallelizes CI feedback and local development
++
++### Code Quality Issues Found and Fixed
++- **ServerConfig.cpp operator<<** — Had duplicated lines and stray semicolon from previous session's patching. Cleaned up.
++- **ServerConfig::numScreens()** — Was accidentally deleted. Restored.
++- **Arch.h Qt include** — Changed from `<QtSystemDetection>` to `<QtGlobal>` (needed for compatibility)
+diff --git a/notes/DISCUSS.md b/notes/DISCUSS.md
+new file mode 100644
+index 0000000..1555d24
+--- /dev/null
++++ b/notes/DISCUSS.md
+@@ -0,0 +1,78 @@
++# DISCUSS.md — Active Items and Decisions
++
++This is a living document for tracking actionables, open questions, decisions, and risks.
++
++---
++
++## Active Bug: Touchscreen Input Forwarding (#9770)
++
++**Status:** In Progress
++**Priority:** High
++**Reported:** 2026-05-20
++
++### Problem
++When the mouse cursor is on the Linux (Wayland/libei) client machine, touchscreen input on the Windows server machine is incorrectly forwarded to the Linux client instead of being handled locally by Windows. This prevents unlocking the Windows machine via its on-screen keyboard/touchscreen.
++
++### Setup
++- Windows machine = Deskflow server
++- Linux machine (Fedora 44, KDE Plasma, Wayland) = Deskflow client
++- Both machines have touchscreens
++
++### Observed Behavior
++1. Mouse on Windows → touch Linux → WORKS (keystrokes stay on Linux)
++2. Mouse on Linux → touch Windows → BROKEN (keystrokes forwarded to Linux instead of staying on Windows)
++
++### Root Cause Analysis
++When the mouse is on the Linux client, the Windows server's screen is "inactive" (the server's `m_active` points to the client). The Windows server captures touch input events but the deskflow server forwards these events to the Linux client instead of letting Windows handle them locally.
++
++The key issue is in how the server handles input events from its own (now inactive) screen. Touch events from the server's physical screen should be handled locally when the active screen is a client.
++
++### Investigation Notes
++- `EiScreen.cpp` line 812: `// we don't care about touch` — EI_DEVICE_CAP_TOUCH is NOT bound in the libei seat capabilities
++- The Linux client (EiScreen) does NOT process touch events at all
++- The Windows server (MSWindowsScreen) DOES receive touch events
++- The server's event routing in `Server.cpp` determines whether events are handled locally or forwarded to the client
++- Key functions to investigate:
++  - `Server::handleKeyDownEvent()` — how key events are routed
++  - `Server::handleButtonEvent()` — how button events are routed
++  - `Server::handleMotionEvent()` — how motion events are routed
++  - `PrimaryClient::enter()` / `PrimaryClient::leave()` — screen activation/deactivation
++  - The `m_active` pointer in Server — determines which screen is currently active
++
++### Possible Fix Directions
++1. **Server-side:** When the server's screen is inactive, prevent forwarding of certain input events (touch-generated key events) to the client.
++2. **Client-side (EiScreen):** Add touch support to the Linux client by binding `EI_DEVICE_CAP_TOUCH` in the libei seat capabilities.
++3. **InputFilter:** Add a rule to filter out touch-generated events when the server screen is inactive.
++
++### Open Questions
++- How does the server distinguish between touch-generated key events and physical keyboard events?
++- Is there a flag or property on the event that indicates it came from a touchscreen?
++- Should the fix be in the server's event routing or in the platform screen's event generation?
++- Does the Windows MSWindowsScreen properly tag touch-generated input events?
++
++### Decisions
++- (To be filled as decisions are made)
++
++### Related Files
++- `src/lib/server/Server.cpp` — main server event routing
++- `src/lib/server/Server.h` — server class definition
++- `src/lib/server/PrimaryClient.cpp` — server's local screen handler
++- `src/lib/platform/MSWindowsScreen.cpp` — Windows screen (touch input source)
++- `src/lib/platform/EiScreen.cpp` — Linux Wayland screen (touch input sink)
++- `src/lib/platform/EiEventQueueBuffer.cpp` — Wayland event queue
++- `src/lib/deskflow/IScreen.h` — screen interface
++- `src/lib/base/EventTypes.h` — event type definitions
++
++---
++
++## General Notes
++
++### Project Conventions
++- C++20, CMake 3.24+, Qt 6.7+
++- Platform code in `src/lib/platform/`, abstract interfaces in `src/lib/deskflow/`
++- All event types defined in `src/lib/base/EventTypes.h` (SSOT)
++- Protocol messages in `src/lib/deskflow/ProtocolTypes.h` (SSOT)
++
++### Build Info
++- Build with: `cmake -B build -S . -DCMAKE_BUILD_TYPE=Debug`
++- Test with: `ctest --test-dir build`
+diff --git a/notes/IMPLEMENTATION_SAFETY_PROTOCOL.md b/notes/IMPLEMENTATION_SAFETY_PROTOCOL.md
+new file mode 100644
+index 0000000..f2460db
+--- /dev/null
++++ b/notes/IMPLEMENTATION_SAFETY_PROTOCOL.md
+@@ -0,0 +1,192 @@
++# Project: Deskflow -- Implementation Safety Protocol
++
++**Purpose:** This document defines a disciplined, step-by-step process for fixing bugs and making changes to the Deskflow codebase. It enforces strict consistency checks to prevent regressions in this multi-platform (Windows/Linux/macOS) C++ project.
++
++**Audience:** Any AI agent (Hermes, Claude, GPT-4, etc.) tasked with working on this project must follow this protocol exactly.
++
++**Golden Rule:** *Never assume consistency. Always verify. If verification fails, stop and fix before proceeding.*
++
++---
++
++## 0. Project Overview
++
++Deskflow is a keyboard and mouse sharing utility (fork of Synergy/Barrier). It allows sharing a single keyboard and mouse across multiple machines.
++
++**Key characteristics:**
++- C++20 project built with CMake 3.24+
++- Qt 6.7+ for GUI components
++- Multi-platform: Windows (Win32), Linux (X11/Wayland/libei), macOS
++- Core protocol: custom TCP protocol between server and client
++- Server = the machine with the physical keyboard/mouse
++- Client = the machine receiving input events
++
++**Repository:** https://github.com/deskflow/deskflow
++
++---
++
++## 1. Core Safety Mechanisms
++
++### 1.1 Single Source of Truth (SSOT) Strategy
++All shared definitions MUST originate from exactly one location:
++
++| Type | SSOT Location | Consumers |
++|------|---------------|-----------|
++| Event types | `src/lib/base/EventTypes.h` | All platform screens, server, client |
++| Protocol messages | `src/lib/deskflow/ProtocolTypes.h` | Server, client, all ClientProxy versions |
++| Clipboard IDs | `src/lib/deskflow/Clipboard.h` | Server, client, platform screens |
++| Key IDs / masks | `src/lib/deskflow/KeyTypes.h` | Key state classes, server, client |
++| Button IDs | `src/lib/deskflow/ButtonTypes.h` | Platform screens, server, client |
++
++**Enforcement:** Before writing any code in a component, check if the needed type/constant/config already exists in the SSOT. If yes, import it. If no, add it to SSOT FIRST, then consume it.
++
++### 1.2 Build System Rules
++- CMake 3.24+ required. Never bypass CMake with manual compiler invocations.
++- All source files must be registered in the appropriate `CMakeLists.txt`.
++- When adding a new file, update the nearest `CMakeLists.txt` immediately.
++- Use `CMAKE_CXX_STANDARD 20` — no exceptions.
++
++### 1.3 Multi-Platform Rules
++- **Never** use platform-specific code without `#ifdef` guards (`_WIN32`, `__APPLE__`, `__linux__`).
++- All platform-specific code lives in `src/lib/platform/`.
++- Abstract interfaces live in `src/lib/deskflow/` (e.g., `IScreen.h`, `IPlatformScreen.h`).
++- When fixing a bug on one platform, check if the same issue exists on other platforms.
++
++### 1.4 Protocol Compatibility
++- The server-client protocol is versioned. Changes to message formats must maintain backward compatibility.
++- All protocol changes must be reflected in ALL `ClientProxy1_*.cpp` versions.
++- Never change the wire format without updating the protocol version.
++
++---
++
++## 2. Pre-Construction: Foundation Validation
++
++**Before writing any code, execute these checks in order:**
++
++### Step 0: Environment Sanity Check
++```bash
++# Verify all required tools
++cmake --version    # >= 3.24
++git --version
++git status         # Should be clean or you know what's changed
++```
++
++### Step 1: Understand the Bug/Task
++- Read the bug report or task description thoroughly.
++- Identify which component(s) are affected (server, client, platform screen, etc.).
++- Identify which platform(s) are affected (Windows, Linux, macOS).
++- Search the codebase for relevant code paths.
++- Document your understanding in `notes/DISCUSS.md` before touching any code.
++
++### Step 2: Read Relevant Code
++Before modifying any file:
++- Read the file you plan to modify in full (or at least the relevant sections).
++- Read the callers of any function you plan to change.
++- Read the interface/base class that defines the contract.
++- Check if there are existing tests for the code you're modifying.
++
++### Step 3: Create a Test Plan
++- Define what "fixed" means — specific, observable criteria.
++- Identify how to verify the fix (build, unit test, manual test).
++- If possible, write a failing test first (TDD approach).
++
++---
++
++## 3. Construction: Bug Fix Protocol
++
++**For bug fixes, follow this order:**
++
++### Phase A: Root Cause Analysis
++1. Identify the exact code path that causes the bug.
++2. Trace the flow from input (e.g., touch event) to output (e.g., key event sent to client).
++3. Document the root cause in `notes/DISCUSS.md`.
++4. Confirm your understanding with the user before proceeding.
++
++### Phase B: Minimal Fix
++1. Make the smallest possible change that fixes the bug.
++2. Do NOT refactor adjacent code.
++3. Do NOT "improve" unrelated code.
++4. Add comments explaining WHY the fix works, not just WHAT it does.
++
++### Phase C: Verification
++1. Build the project: `cmake --build build`
++2. Run relevant unit tests: `ctest --test-dir build`
++3. Verify the fix doesn't break other platforms.
++4. Update `notes/DISCUSS.md` with the fix details.
++
++### Phase D: Documentation
++1. Update `notes/CONVERSATION_LOG.md` with the decision and fix.
++2. Update `notes/CONTINUATION.md` if there are follow-up tasks.
++3. If the fix reveals a pattern worth remembering, update `notes/LEARNINGS.md`.
++
++---
++
++## 4. Consistency Enforcement
++
++### 4.1 Cross-Platform Checks
++When modifying platform-specific code, verify:
++- [ ] Windows (`src/lib/platform/MSWindows*.cpp`) — does the same issue exist?
++- [ ] Linux/X11 (`src/lib/platform/XWindows*.cpp`) — does the same issue exist?
++- [ ] Linux/Wayland (`src/lib/platform/Ei*.cpp`) — does the same issue exist?
++- [ ] macOS (`src/lib/platform/OSX*.cpp/.mm`) — does the same issue exist?
++
++### 4.2 Event Flow Checks
++When modifying event handling, trace the full path:
++1. Platform screen captures input → sends event via `sendEvent()`
++2. Event queue dispatches to handler
++3. Server/client processes the event
++4. Server forwards to client (or client forwards to server)
++5. Receiving side synthesizes the input
++
++Verify each step is correct for the specific event type.
++
++---
++
++## 5. Git Discipline
++
++**Rule: Commit and Push After Every Significant Change**
++
++### What is "Significant"?
++- Bug fixes
++- New files or functions
++- Configuration changes (CMakeLists.txt, etc.)
++- Changes that affect build or behavior
++
++### How to Commit
++```bash
++cd /home/ubuntu/scripts/deskflow
++git add -A
++git commit -m "<date> – <brief description>
++
++- Specific change 1
++- Specific change 2
++- Verification: <what passed>"
++git push origin master
++```
++
++### Documentation to Update
++- `notes/LEARNINGS.md` — Technical findings, what worked, what didn't
++- `notes/DISCUSS.md` — Decisions, open questions, risks
++- `notes/CONTINUATION.md` — What to do next if interrupted
++
++---
++
++## 6. Error Handling & Rollback
++
++- If a fix introduces a regression, revert immediately.
++- If you're unsure about a change, create a new branch: `git checkout -b fix/<description>`
++- Never leave the project in a broken state. If you can't fix it, document what you tried and why it failed.
++
++---
++
++## 7. Model Instructions: How to Use This Document
++
++1. **Read this document in full** before starting any task.
++2. **Follow the Pre-Construction checks** before writing code.
++3. **Follow the Construction phases** (A → B → C → D) in order.
++4. **Fail loud** — if you can't complete a step, say so explicitly.
++5. **Update the notes files** as you work — they are your memory.
++
++---
++
++**Last updated:** 2026-05-21
++**Status:** Active — touchscreen input forwarding bug fix in progress
+diff --git a/notes/LEARNINGS.md b/notes/LEARNINGS.md
+new file mode 100644
+index 0000000..5d896f6
+--- /dev/null
++++ b/notes/LEARNINGS.md
+@@ -0,0 +1,65 @@
++# LEARNINGS.md — Technical Findings and Solutions
++
++This file records technical findings, what worked, what didn't, and how issues were resolved.
++
++---
++
++## 2026-05-21 — Build Environment Setup
++
++### Issue: Qt version mismatch
++- **Problem:** Project requires Qt 6.7.0+, Ubuntu 24.04 ships Qt 6.4.2
++- **Initial wrong approach:** Lowered `REQUIRED_QT_VERSION` to 6.4.2 in CMakeLists.txt, then tried to patch source code to work around missing Qt 6.5+ APIs (`QString::removeFirst()`, `removeLast()`, `QStringList::indexOf` with `Qt::CaseSensitivity`, `QTextStream` in `FingerprintDatabase`, `QStandardPaths::GenericStateLocation`)
++- **User correction:** "Do not downgrade anything." — Reverted all changes
++- **Correct solution:** Installed Qt 6.7.3 from official Qt via `aqtinstall` into `/home/ubuntu/Qt/6.7.3/gcc_64`
++- **Key lesson:** Never downgrade dependency requirements to match what's available in system packages. Instead, install the correct version from upstream.
++
++### Issue: libei version mismatch
++- **Problem:** Project requires libei >= 1.3, Ubuntu 24.04 ships 1.2.1
++- **Solution:** Built libei 1.6.0 from source (gitlab.freedesktop.org/libinput/libei), installed to `/usr/local`
++- **Dependencies needed:** `libsystemd-dev`, `libevdev-dev`, `meson`, `ninja`, `jinja2`
++
++### Issue: libportal version mismatch
++- **Problem:** Project requires libportal >= 0.9.1, Ubuntu 24.04 ships 0.7.1
++- **Solution:** Building libportal 0.9.2 from source (github.com/flatpak/libportal), installed to `/usr/local`
++- **Dependencies needed:** `libgirepository1.0-dev`
++- **Ongoing:** vapigen not available, disabled with `-Dintrospection=false -Dvapi=false -Ddocs=false`
++
++### Issue: System package installation requires sudo
++- **Pattern:** `sudo apt-get install -y <package>` needed for system-level dev packages
++- **Note:** Python packages should go in project `.venv`, never system Python
++
++### Issue: C++ escape sequences in patch tool
++- **From memory:** The patch tool can corrupt C++ string literals containing `\t`, `\n` etc.
++- **Workaround:** Use `write_file` for full file rewrites, or `execute_code` with Python for precise replacement
++
++---
++
++## 2026-05-21 — Code Quality Issues in Previous Session Changes
++
++### Issue: ServerConfig.cpp operator<< has duplicated/broken code
++- **File:** `src/lib/gui/config/ServerConfig.cpp`
++- **Problem:** The `operator<<` method has multiple duplicate lines for `forwardTouchscreenEvents` and `clipboardSharingSize`, and a stray `if (config.hasSwitchDelay());` with semicolon
++- **Status:** Needs cleanup — the patch file captures the current state but the code is not clean
++- **Lesson:** When adding serialization output, be careful not to duplicate existing lines. Always verify the full method after patching.
++
++### Issue: Arch.h Qt include change
++- **File:** `src/lib/arch/Arch.h`
++- **Change:** `#include <QtSystemDetection>` → `#include <QtGlobal>`
++- **Reason:** `QtSystemDetection` header doesn't exist in older Qt versions; `QtGlobal` provides the same macros
++- **Status:** This change is correct and needed for Qt 6.7.3 compatibility
++
++---
++
++## Build Commands
++
++```bash
++# Configure (with Qt 6.7.3)
++export Qt6_DIR=/home/ubuntu/Qt/6.7.3/gcc_64/lib/cmake/Qt6
++cmake -B build -S . -DCMAKE_BUILD_TYPE=Debug -DSKIP_BUILD_TESTS=OFF
++
++# Build specific targets
++cmake --build build --target ServerConfigTests ServerTests
++
++# Run tests
++ctest --test-dir build/src/unittests --output-on-failure
++```
+diff --git a/notes/PATHS.md b/notes/PATHS.md
+new file mode 100644
+index 0000000..061299b
+--- /dev/null
++++ b/notes/PATHS.md
+@@ -0,0 +1,99 @@
++# Deskflow Paths Reference
++
++This file records absolute and relative paths for critical components, tools, and configuration files in the Deskflow project.
++
++**Last Updated:** 2026-05-21
++
++---
++
++## System & Tool Paths
++
++| Tool/Path | Value | Notes |
++|-----------|-------|-------|
++| **CMake** | `/usr/bin/cmake` | >= 3.24 required |
++| **Git** | `/usr/bin/git` | For version info in builds |
++| **Qt 6** | System install | >= 6.7.0 required |
++| **libei** | System install | >= 1.3 required (Linux/Wayland) |
++| **libportal** | System install | >= 0.9.1 required (Linux/Wayland) |
++| **OpenSSL** | System install | >= 3.0 required |
++
++---
++
++## Project Structure
++
++| Directory | Path | Purpose |
++|-----------|------|---------|
++| **Root** | `/home/ubuntu/scripts/deskflow` | Project root |
++| **Apps** | `/home/ubuntu/scripts/deskflow/src/apps/` | Applications (GUI, daemon, core) |
++| **Lib** | `/home/ubuntu/scripts/deskflow/src/lib/` | Core libraries |
++| **Tests** | `/home/ubuntu/scripts/deskflow/src/unittests/` | Unit tests |
++| **Notes** | `/home/ubuntu/scripts/deskflow/notes/` | Planning, learnings, specs |
++| **CMake** | `/home/ubuntu/scripts/deskflow/cmake/` | CMake modules and config |
++| **Deploy** | `/home/ubuntu/scripts/deskflow/deploy/` | Deployment scripts |
++| **Docs** | `/home/ubuntu/scripts/deskflow/docs/` | Documentation |
++| **Translations** | `/home/ubuntu/scripts/deskflow/translations/` | i18n translation files |
++
++---
++
++## Key Source Directories
++
++| Directory | Path | Purpose |
++|-----------|------|---------|
++| **Platform (Linux/Wayland)** | `src/lib/platform/Ei*.cpp` | libei/portal Wayland screen implementation |
++| **Platform (Linux/X11)** | `src/lib/platform/XWindows*.cpp` | X11 screen implementation |
++| **Platform (Windows)** | `src/lib/platform/MSWindows*.cpp` | Windows screen implementation |
++| **Platform (macOS)** | `src/lib/platform/OSX*.cpp/.mm` | macOS screen implementation |
++| **Deskflow Core** | `src/lib/deskflow/` | Core abstractions (IScreen, IPlatformScreen, etc.) |
++| **Server** | `src/lib/server/` | Server logic (Server.cpp, PrimaryClient.cpp, ClientProxy*.cpp) |
++| **Client** | `src/lib/client/` | Client logic (Client.cpp) |
++| **Base** | `src/lib/base/` | Base types (EventTypes.h, Log, etc.) |
++| **Net** | `src/lib/net/` | Network layer (TCPSocket, SecureSocket, etc.) |
++| **GUI** | `src/lib/gui/` | GUI components |
++
++---
++
++## Key Files
++
++| File | Path | Purpose |
++|------|------|---------|
++| **Root CMakeLists.txt** | `/home/ubuntu/scripts/deskflow/CMakeLists.txt` | Top-level build config |
++| **Event Types** | `src/lib/base/EventTypes.h` | All event type definitions (SSOT) |
++| **Protocol Types** | `src/lib/deskflow/ProtocolTypes.h` | Protocol message types (SSOT) |
++| **EiScreen** | `src/lib/platform/EiScreen.cpp` | Linux Wayland/libei screen (touch input here) |
++| **EiScreen Header** | `src/lib/platform/EiScreen.h` | EiScreen class definition |
++| **Server** | `src/lib/server/Server.cpp` | Main server logic (event routing) |
++| **Server Header** | `src/lib/server/Server.h` | Server class definition |
++| **PrimaryClient** | `src/lib/server/PrimaryClient.cpp` | Server's local screen handler |
++| **ClientProxy** | `src/lib/server/ClientProxy.cpp` | Client connection handler |
++| **ClientProxy1_0** | `src/lib/server/ClientProxy1_0.cpp` | Protocol v1.0 client handler |
++| **InputFilter** | `src/lib/server/InputFilter.cpp` | Input filtering rules |
++| **IScreen** | `src/lib/deskflow/IScreen.h` | Screen interface |
++| **IPlatformScreen** | `src/lib/deskflow/IPlatformScreen.h` | Platform screen interface |
++| **Screen** | `src/lib/deskflow/Screen.cpp` | Screen implementation |
++| **Client** | `src/lib/client/Client.cpp` | Client-side logic |
++
++---
++
++## Build Commands
++
++```bash
++# Configure
++cmake -B build -S . -DCMAKE_BUILD_TYPE=Debug
++
++# Build
++cmake --build build
++
++# Run tests
++ctest --test-dir build
++
++# Clean
++cmake --build build --target clean
++```
++
++---
++
++## Notes
++
++- Whenever a new important path or tool is added, update this file.
++- Keep this file synchronized with actual locations.
++- This file is **not exhaustive**; add entries as the project grows.
+diff --git a/notes/patches/forward-touchscreen-events.patch b/notes/patches/forward-touchscreen-events.patch
+new file mode 100644
+index 0000000..c19481b
+--- /dev/null
++++ b/notes/patches/forward-touchscreen-events.patch
+@@ -0,0 +1,321 @@
++diff --git a/src/lib/arch/Arch.h b/src/lib/arch/Arch.h
++index d1d75da..5f12df8 100644
++--- a/src/lib/arch/Arch.h
+++++ b/src/lib/arch/Arch.h
++@@ -5,7 +5,7 @@
++  * SPDX-FileCopyrightText: (C) 2002 Chris Schoeneman
++  * SPDX-License-Identifier: GPL-2.0-only WITH LicenseRef-OpenSSL-Exception
++  */
++-#include <QtSystemDetection>
+++#include <QtGlobal>
++ // Consider whether or not to use either encapsulation (as below)
++ // or inheritance (as it is now) for the ARCH stuff.
++ //
++diff --git a/src/lib/deskflow/OptionTypes.h b/src/lib/deskflow/OptionTypes.h
++index 86da2ef..ca55ec2 100644
++--- a/src/lib/deskflow/OptionTypes.h
+++++ b/src/lib/deskflow/OptionTypes.h
++@@ -59,6 +59,7 @@ static const OptionID kOptionDefaultLockToScreenState = OPTION_CODE("LTSS");
++ static const OptionID kOptionDisableLockToScreen = OPTION_CODE("DLTS");
++ static const OptionID kOptionClipboardSharing = OPTION_CODE("CLPS");
++ static const OptionID kOptionClipboardSharingSize = OPTION_CODE("CLSZ");
+++static const OptionID kOptionForwardTouchscreenEvents = OPTION_CODE("FTSC");
++ //@}
++ 
++ //! @name Screen switch corner masks
++diff --git a/src/lib/gui/config/ServerConfig.cpp b/src/lib/gui/config/ServerConfig.cpp
++index 75f38e0..e41f321 100644
++--- a/src/lib/gui/config/ServerConfig.cpp
+++++ b/src/lib/gui/config/ServerConfig.cpp
++@@ -70,7 +70,8 @@ bool ServerConfig::operator==(const ServerConfig &sc) const
++          m_DefaultLockToScreenState == sc.m_DefaultLockToScreenState && //
++          m_DisableLockToScreen == sc.m_DisableLockToScreen &&           //
++          m_ClipboardSharing == sc.m_ClipboardSharing &&                 //
++-         m_ClipboardSharingSize == sc.m_ClipboardSharingSize;
+++         m_ClipboardSharingSize == sc.m_ClipboardSharingSize &&       //
+++         m_ForwardTouchscreenEvents == sc.m_ForwardTouchscreenEvents;
++ }
++ 
++ void ServerConfig::save(QFile &file) const
++@@ -118,6 +119,7 @@ void ServerConfig::commit()
++   settings().setValue("disableLockToScreen", disableLockToScreen());
++   settings().setValue("clipboardSharing", clipboardSharing());
++   settings().setValue("clipboardSharingSize", QVariant::fromValue(clipboardSharingSize()));
+++  settings().setValue("forwardTouchscreenEvents", forwardTouchscreenEvents());
++ 
++   writeSettings(settings(), switchCorners(), "switchCorner");
++ 
++@@ -172,6 +174,7 @@ void ServerConfig::recall()
++       settings().value("clipboardSharingSize", (int)ServerConfig::defaultClipboardSharingSize()).toULongLong()
++   );
++   setClipboardSharing(settings().value("clipboardSharing", true).toBool());
+++  setForwardTouchscreenEvents(settings().value("forwardTouchscreenEvents", false).toBool());
++ 
++   readSettings(settings(), switchCorners(), "switchCorner", false, static_cast<int>(NumSwitchCorners));
++ 
++@@ -273,6 +276,8 @@ QTextStream &operator<<(QTextStream &outStream, const ServerConfig &config)
++             << "clipboardSharing = " << (config.clipboardSharing() ? "true" : "false") << Qt::endl;
++   outStream << "\t"
++             << "clipboardSharingSize = " << config.clipboardSharingSize() << Qt::endl;
+++  outStream << "\t"
+++            << "forwardTouchscreenEvents = " << (config.forwardTouchscreenEvents() ? "true" : "false") << Qt::endl;
++ 
++   if (config.hasSwitchDelay())
++     outStream << "\t"
++diff --git a/src/lib/gui/config/ServerConfig.h b/src/lib/gui/config/ServerConfig.h
++index 5196c56..4de1286 100644
++--- a/src/lib/gui/config/ServerConfig.h
+++++ b/src/lib/gui/config/ServerConfig.h
++@@ -125,6 +125,10 @@ public:
++   {
++     return m_ClipboardSharingSize;
++   }
+++  bool forwardTouchscreenEvents() const
+++  {
+++    return m_ForwardTouchscreenEvents;
+++  }
++   static size_t defaultClipboardSharingSize();
++ 
++   bool save(const QString &fileName) const;
++@@ -222,6 +226,10 @@ private:
++   void setConfigFile(const QString &configFile) const;
++   void setUseExternalConfig(bool useExternalConfig) const;
++   size_t setClipboardSharingSize(size_t size);
+++  void setForwardTouchscreenEvents(bool on)
+++  {
+++    m_ForwardTouchscreenEvents = on;
+++  }
++   QList<bool> &switchCorners()
++   {
++     return m_SwitchCorners;
++@@ -256,6 +264,7 @@ private:
++   int m_Columns;
++   int m_Rows;
++   size_t m_ClipboardSharingSize = defaultClipboardSharingSize();
+++  bool m_ForwardTouchscreenEvents = false;
++ };
++ 
++ QTextStream &operator<<(QTextStream &outStream, const ServerConfig &config);
++diff --git a/src/lib/gui/dialogs/ServerConfigDialog.cpp b/src/lib/gui/dialogs/ServerConfigDialog.cpp
++index 7ac8c37..a05efb1 100644
++--- a/src/lib/gui/dialogs/ServerConfigDialog.cpp
+++++ b/src/lib/gui/dialogs/ServerConfigDialog.cpp
++@@ -105,6 +105,10 @@ ServerConfigDialog::ServerConfigDialog(QWidget *parent, ServerConfig &config)
++ 
++   connect(ui->cbRelativeMouseMoves, &QCheckBox::toggled, this, &ServerConfigDialog::toggleRelativeMouseMoves);
++   connect(ui->cbEnableClipboard, &QCheckBox::toggled, this, &ServerConfigDialog::toggleClipboard);
+++  connect(
+++      ui->cbForwardTouchscreenEvents, &QCheckBox::toggled, this,
+++      &ServerConfigDialog::toggleForwardTouchscreenEvents
+++  );
++ 
++   connect(ui->btnBrowseConfigFile, &QPushButton::clicked, this, &ServerConfigDialog::browseConfigFile);
++ 
++@@ -151,6 +155,8 @@ ServerConfigDialog::ServerConfigDialog(QWidget *parent, ServerConfig &config)
++   ui->sbClipboardSizeLimit->setValue(clipboardSharingSizeM);
++   ui->sbClipboardSizeLimit->setEnabled(serverConfig().clipboardSharing());
++ 
+++  ui->cbForwardTouchscreenEvents->setChecked(serverConfig().forwardTouchscreenEvents());
+++
++   for (const Hotkey &hotkey : std::as_const(serverConfig().hotkeys()))
++     ui->listHotkeys->addItem(hotkey.text());
++ 
++@@ -338,6 +344,12 @@ void ServerConfigDialog::toggleClipboard(bool enabled)
++   onChange();
++ }
++ 
+++void ServerConfigDialog::toggleForwardTouchscreenEvents(bool enabled)
+++{
+++  serverConfig().setForwardTouchscreenEvents(enabled);
+++  onChange();
+++}
+++
++ void ServerConfigDialog::setClipboardLimit(int limit)
++ {
++   serverConfig().setClipboardSharingSize(limit * 1024);
++diff --git a/src/lib/gui/dialogs/ServerConfigDialog.h b/src/lib/gui/dialogs/ServerConfigDialog.h
++index 5c5fa25..95f6d9f 100644
++--- a/src/lib/gui/dialogs/ServerConfigDialog.h
+++++ b/src/lib/gui/dialogs/ServerConfigDialog.h
++@@ -65,6 +65,7 @@ protected:
++ 
++   void toggleClipboard(bool enabled);
++   void setClipboardLimit(int limit);
+++  void toggleForwardTouchscreenEvents(bool enabled);
++ 
++   void toggleHeartbeat(bool enabled);
++   void setHeartbeat(int rate);
++diff --git a/src/lib/gui/dialogs/ServerConfigDialog.ui b/src/lib/gui/dialogs/ServerConfigDialog.ui
++index 523b32d..b2886df 100644
++--- a/src/lib/gui/dialogs/ServerConfigDialog.ui
+++++ b/src/lib/gui/dialogs/ServerConfigDialog.ui
++@@ -523,6 +523,16 @@
++             </item>
++            </layout>
++           </item>
+++          <item>
+++           <widget class="QCheckBox" name="cbForwardTouchscreenEvents">
+++            <property name="text">
+++             <string>Forward touchscreen events</string>
+++            </property>
+++            <property name="checked">
+++             <bool>false</bool>
+++            </property>
+++           </widget>
+++          </item>
++           <item>
++            <spacer name="verticalSpacer_6">
++             <property name="orientation">
++diff --git a/src/lib/server/Config.cpp b/src/lib/server/Config.cpp
++index c147635..a8f295a 100644
++--- a/src/lib/server/Config.cpp
+++++ b/src/lib/server/Config.cpp
++@@ -676,6 +676,8 @@ void Config::readSectionOptions(ConfigReadContext &s)
++       addOption("", kOptionClipboardSharing, s.parseBoolean(value));
++     } else if (name == "clipboardSharingSize") {
++       addOption("", kOptionClipboardSharingSize, s.parseInt(value));
+++    } else if (name == "forwardTouchscreenEvents") {
+++      addOption("", kOptionForwardTouchscreenEvents, s.parseBoolean(value));
++     } else {
++       handled = false;
++     }
++@@ -1260,6 +1262,9 @@ const char *Config::getOptionName(OptionID id)
++   if (id == kOptionClipboardSharingSize) {
++     return "clipboardSharingSize";
++   }
+++  if (id == kOptionForwardTouchscreenEvents) {
+++    return "forwardTouchscreenEvents";
+++  }
++   return nullptr;
++ }
++ 
++@@ -1269,7 +1274,7 @@ std::string Config::getOptionValue(OptionID id, OptionValue value)
++       id == kOptionScreenSwitchNeedsShift || id == kOptionScreenSwitchNeedsControl ||
++       id == kOptionScreenSwitchNeedsAlt || id == kOptionXTestXineramaUnaware || id == kOptionRelativeMouseMoves ||
++       id == kOptionWin32KeepForeground || id == kOptionScreenPreserveFocus || id == kOptionClipboardSharing ||
++-      id == kOptionClipboardSharingSize) {
+++      id == kOptionClipboardSharingSize || id == kOptionForwardTouchscreenEvents) {
++     return (value != 0) ? "true" : "false";
++   }
++   if (id == kOptionModifierMapForShift || id == kOptionModifierMapForControl || id == kOptionModifierMapForAlt ||
++diff --git a/src/lib/server/Server.cpp b/src/lib/server/Server.cpp
++index b957d63..d013ef7 100644
++--- a/src/lib/server/Server.cpp
+++++ b/src/lib/server/Server.cpp
++@@ -1124,6 +1124,11 @@ void Server::processOptions()
++       } else {
++         m_maximumClipboardSize = static_cast<size_t>(value);
++       }
+++    } else if (id == kOptionForwardTouchscreenEvents) {
+++      m_forwardTouchscreenEvents = (value != 0);
+++      if (m_forwardTouchscreenEvents) {
+++        LOG_INFO("touchscreen event forwarding is enabled");
+++      }
++     }
++   }
++   if (m_relativeMoves && !newRelativeMoves) {
++diff --git a/src/lib/server/Server.h b/src/lib/server/Server.h
++index 424cf60..27b784d 100644
++--- a/src/lib/server/Server.h
+++++ b/src/lib/server/Server.h
++@@ -472,4 +472,5 @@ private:
++   bool m_defaultLockToScreenState = false;
++   bool m_disableLockToScreen = false;
++   bool m_enableClipboard = true;
+++  bool m_forwardTouchscreenEvents = false;
++ };
++diff --git a/src/unittests/server/ServerConfigTests.cpp b/src/unittests/server/ServerConfigTests.cpp
++index aa870a9..fa03705 100644
++--- a/src/unittests/server/ServerConfigTests.cpp
+++++ b/src/unittests/server/ServerConfigTests.cpp
++@@ -57,6 +57,10 @@ void ServerConfigTests::equalityCheck()
++   b.getInputFilter()->addFilterRule(InputFilter::Rule{new OnlySystemFilter()});
++   QVERIFY(a.addAlias("screenA", "aliasA"));
++   QVERIFY(b.addAlias("screenA", "aliasA"));
+++
+++  // forwardTouchscreenEvents global option
+++  QVERIFY(a.addOption(std::string(), kOptionForwardTouchscreenEvents, 1));
+++  QVERIFY(b.addOption(std::string(), kOptionForwardTouchscreenEvents, 1));
++   /* TODO Fix linking to the proper libs
++   NetworkAddress addr1("localhost", 8080);
++   addr1.resolve();
++@@ -161,4 +165,61 @@ void ServerConfigTests::equalityCheck_diff_neighbours3()
++   QVERIFY(a != b);
++ }
++ 
+++void ServerConfigTests::equalityCheck_diff_forwardTouchscreenEvents()
+++{
+++  Config a(nullptr);
+++  Config b(nullptr);
+++
+++  QVERIFY(a.addScreen("screenA"));
+++  QVERIFY(b.addScreen("screenA"));
+++  QVERIFY(a.addOption(std::string(), kOptionForwardTouchscreenEvents, 0));
+++  QVERIFY(b.addOption(std::string(), kOptionForwardTouchscreenEvents, 1));
+++  QVERIFY(a != b);
+++}
+++
+++void ServerConfigTests::forwardTouchscreenEvents_roundTrip()
+++{
+++  Config config(nullptr);
+++  QVERIFY(config.addScreen("testScreen"));
+++
+++  // Set global forwardTouchscreenEvents to true
+++  QVERIFY(config.addOption(std::string(), kOptionForwardTouchscreenEvents, 1));
+++
+++  // Verify it was set on global options
+++  const auto *globalOpts = config.getOptions("");
+++  QVERIFY(globalOpts != nullptr);
+++  auto it = globalOpts->find(kOptionForwardTouchscreenEvents);
+++  QVERIFY(it != globalOpts->end());
+++  QCOMPARE(it->second, 1);
+++
+++  // Set per-screen forwardTouchscreenEvents to true
+++  QVERIFY(config.addOption("testScreen", kOptionForwardTouchscreenEvents, 1));
+++
+++  // Verify it was set on screen options
+++  const auto *screenOpts = config.getOptions("testScreen");
+++  QVERIFY(screenOpts != nullptr);
+++  it = screenOpts->find(kOptionForwardTouchscreenEvents);
+++  QVERIFY(it != screenOpts->end());
+++  QCOMPARE(it->second, 1);
+++
+++  // Remove the option
+++  QVERIFY(config.removeOption(std::string(), kOptionForwardTouchscreenEvents));
+++  globalOpts = config.getOptions("");
+++  QVERIFY(globalOpts != nullptr);
+++  it = globalOpts->find(kOptionForwardTouchscreenEvents);
+++  QVERIFY(it == globalOpts->end());
+++}
+++
+++void ServerConfigTests::forwardTouchscreenEvents_parseNameAndValue()
+++{
+++  // Verify the option name is correct
+++  const char *name = Config::getOptionName(kOptionForwardTouchscreenEvents);
+++  QVERIFY(name != nullptr);
+++  QCOMPARE(name, "forwardTouchscreenEvents");
+++
+++  // Verify value mapping: 1 -> "true", 0 -> "false"
+++  QCOMPARE(Config::getOptionValue(kOptionForwardTouchscreenEvents, 1), "true");
+++  QCOMPARE(Config::getOptionValue(kOptionForwardTouchscreenEvents, 0), "false");
+++}
+++
++ QTEST_MAIN(ServerConfigTests)
++diff --git a/src/unittests/server/ServerConfigTests.h b/src/unittests/server/ServerConfigTests.h
++index 4bb2cf3..2a5d383 100644
++--- a/src/unittests/server/ServerConfigTests.h
+++++ b/src/unittests/server/ServerConfigTests.h
++@@ -12,10 +12,13 @@ class ServerConfigTests : public QObject
++ private Q_SLOTS:
++   void equalityCheck();
++   void equalityCheck_diff_options();
+++  void equalityCheck_diff_forwardTouchscreenEvents();
++   void equalityCheck_diff_alias();
++   void equalityCheck_diff_filters();
++   //  void equalityCheck_diff_address();
++   void equalityCheck_diff_neighbours1();
++   void equalityCheck_diff_neighbours2();
++   void equalityCheck_diff_neighbours3();
+++  void forwardTouchscreenEvents_roundTrip();
+++  void forwardTouchscreenEvents_parseNameAndValue();
++ };
+diff --git a/src/lib/arch/Arch.h b/src/lib/arch/Arch.h
+index d1d75da..5f12df8 100644
+--- a/src/lib/arch/Arch.h
++++ b/src/lib/arch/Arch.h
+@@ -5,7 +5,7 @@
+  * SPDX-FileCopyrightText: (C) 2002 Chris Schoeneman
+  * SPDX-License-Identifier: GPL-2.0-only WITH LicenseRef-OpenSSL-Exception
+  */
+-#include <QtSystemDetection>
++#include <QtGlobal>
+ // Consider whether or not to use either encapsulation (as below)
+ // or inheritance (as it is now) for the ARCH stuff.
+ //
+diff --git a/src/lib/deskflow/OptionTypes.h b/src/lib/deskflow/OptionTypes.h
+index 86da2ef..ca55ec2 100644
+--- a/src/lib/deskflow/OptionTypes.h
++++ b/src/lib/deskflow/OptionTypes.h
+@@ -59,6 +59,7 @@ static const OptionID kOptionDefaultLockToScreenState = OPTION_CODE("LTSS");
+ static const OptionID kOptionDisableLockToScreen = OPTION_CODE("DLTS");
+ static const OptionID kOptionClipboardSharing = OPTION_CODE("CLPS");
+ static const OptionID kOptionClipboardSharingSize = OPTION_CODE("CLSZ");
++static const OptionID kOptionForwardTouchscreenEvents = OPTION_CODE("FTSC");
+ //@}
+ 
+ //! @name Screen switch corner masks
+diff --git a/src/lib/gui/config/ServerConfig.cpp b/src/lib/gui/config/ServerConfig.cpp
+index 75f38e0..b2f62c9 100644
+--- a/src/lib/gui/config/ServerConfig.cpp
++++ b/src/lib/gui/config/ServerConfig.cpp
+@@ -70,7 +70,8 @@ bool ServerConfig::operator==(const ServerConfig &sc) const
+          m_DefaultLockToScreenState == sc.m_DefaultLockToScreenState && //
+          m_DisableLockToScreen == sc.m_DisableLockToScreen &&           //
+          m_ClipboardSharing == sc.m_ClipboardSharing &&                 //
+-         m_ClipboardSharingSize == sc.m_ClipboardSharingSize;
++         m_ClipboardSharingSize == sc.m_ClipboardSharingSize &&         //
++         m_ForwardTouchscreenEvents == sc.m_ForwardTouchscreenEvents;
+ }
+ 
+ void ServerConfig::save(QFile &file) const
+@@ -118,6 +119,7 @@ void ServerConfig::commit()
+   settings().setValue("disableLockToScreen", disableLockToScreen());
+   settings().setValue("clipboardSharing", clipboardSharing());
+   settings().setValue("clipboardSharingSize", QVariant::fromValue(clipboardSharingSize()));
++  settings().setValue("forwardTouchscreenEvents", forwardTouchscreenEvents());
+ 
+   writeSettings(settings(), switchCorners(), "switchCorner");
+ 
+@@ -172,6 +174,7 @@ void ServerConfig::recall()
+       settings().value("clipboardSharingSize", (int)ServerConfig::defaultClipboardSharingSize()).toULongLong()
+   );
+   setClipboardSharing(settings().value("clipboardSharing", true).toBool());
++  setForwardTouchscreenEvents(settings().value("forwardTouchscreenEvents", false).toBool());
+ 
+   readSettings(settings(), switchCorners(), "switchCorner", false, static_cast<int>(NumSwitchCorners));
+ 
+@@ -273,6 +276,8 @@ QTextStream &operator<<(QTextStream &outStream, const ServerConfig &config)
+             << "clipboardSharing = " << (config.clipboardSharing() ? "true" : "false") << Qt::endl;
+   outStream << "\t"
+             << "clipboardSharingSize = " << config.clipboardSharingSize() << Qt::endl;
++  outStream << "\t"
++            << "forwardTouchscreenEvents = " << (config.forwardTouchscreenEvents() ? "true" : "false") << Qt::endl;
+ 
+   if (config.hasSwitchDelay())
+     outStream << "\t"
+diff --git a/src/lib/gui/config/ServerConfig.h b/src/lib/gui/config/ServerConfig.h
+index 5196c56..4de1286 100644
+--- a/src/lib/gui/config/ServerConfig.h
++++ b/src/lib/gui/config/ServerConfig.h
+@@ -125,6 +125,10 @@ public:
+   {
+     return m_ClipboardSharingSize;
+   }
++  bool forwardTouchscreenEvents() const
++  {
++    return m_ForwardTouchscreenEvents;
++  }
+   static size_t defaultClipboardSharingSize();
+ 
+   bool save(const QString &fileName) const;
+@@ -222,6 +226,10 @@ private:
+   void setConfigFile(const QString &configFile) const;
+   void setUseExternalConfig(bool useExternalConfig) const;
+   size_t setClipboardSharingSize(size_t size);
++  void setForwardTouchscreenEvents(bool on)
++  {
++    m_ForwardTouchscreenEvents = on;
++  }
+   QList<bool> &switchCorners()
+   {
+     return m_SwitchCorners;
+@@ -256,6 +264,7 @@ private:
+   int m_Columns;
+   int m_Rows;
+   size_t m_ClipboardSharingSize = defaultClipboardSharingSize();
++  bool m_ForwardTouchscreenEvents = false;
+ };
+ 
+ QTextStream &operator<<(QTextStream &outStream, const ServerConfig &config);
+diff --git a/src/lib/gui/dialogs/ServerConfigDialog.cpp b/src/lib/gui/dialogs/ServerConfigDialog.cpp
+index 7ac8c37..b5d211f 100644
+--- a/src/lib/gui/dialogs/ServerConfigDialog.cpp
++++ b/src/lib/gui/dialogs/ServerConfigDialog.cpp
+@@ -105,6 +105,9 @@ ServerConfigDialog::ServerConfigDialog(QWidget *parent, ServerConfig &config)
+ 
+   connect(ui->cbRelativeMouseMoves, &QCheckBox::toggled, this, &ServerConfigDialog::toggleRelativeMouseMoves);
+   connect(ui->cbEnableClipboard, &QCheckBox::toggled, this, &ServerConfigDialog::toggleClipboard);
++  connect(
++      ui->cbForwardTouchscreenEvents, &QCheckBox::toggled, this, &ServerConfigDialog::toggleForwardTouchscreenEvents
++  );
+ 
+   connect(ui->btnBrowseConfigFile, &QPushButton::clicked, this, &ServerConfigDialog::browseConfigFile);
+ 
+@@ -151,6 +154,8 @@ ServerConfigDialog::ServerConfigDialog(QWidget *parent, ServerConfig &config)
+   ui->sbClipboardSizeLimit->setValue(clipboardSharingSizeM);
+   ui->sbClipboardSizeLimit->setEnabled(serverConfig().clipboardSharing());
+ 
++  ui->cbForwardTouchscreenEvents->setChecked(serverConfig().forwardTouchscreenEvents());
++
+   for (const Hotkey &hotkey : std::as_const(serverConfig().hotkeys()))
+     ui->listHotkeys->addItem(hotkey.text());
+ 
+@@ -338,6 +343,12 @@ void ServerConfigDialog::toggleClipboard(bool enabled)
+   onChange();
+ }
+ 
++void ServerConfigDialog::toggleForwardTouchscreenEvents(bool enabled)
++{
++  serverConfig().setForwardTouchscreenEvents(enabled);
++  onChange();
++}
++
+ void ServerConfigDialog::setClipboardLimit(int limit)
+ {
+   serverConfig().setClipboardSharingSize(limit * 1024);
+diff --git a/src/lib/gui/dialogs/ServerConfigDialog.h b/src/lib/gui/dialogs/ServerConfigDialog.h
+index 5c5fa25..95f6d9f 100644
+--- a/src/lib/gui/dialogs/ServerConfigDialog.h
++++ b/src/lib/gui/dialogs/ServerConfigDialog.h
+@@ -65,6 +65,7 @@ protected:
+ 
+   void toggleClipboard(bool enabled);
+   void setClipboardLimit(int limit);
++  void toggleForwardTouchscreenEvents(bool enabled);
+ 
+   void toggleHeartbeat(bool enabled);
+   void setHeartbeat(int rate);
+diff --git a/src/lib/gui/dialogs/ServerConfigDialog.ui b/src/lib/gui/dialogs/ServerConfigDialog.ui
+index 523b32d..b2886df 100644
+--- a/src/lib/gui/dialogs/ServerConfigDialog.ui
++++ b/src/lib/gui/dialogs/ServerConfigDialog.ui
+@@ -523,6 +523,16 @@
+             </item>
+            </layout>
+           </item>
++          <item>
++           <widget class="QCheckBox" name="cbForwardTouchscreenEvents">
++            <property name="text">
++             <string>Forward touchscreen events</string>
++            </property>
++            <property name="checked">
++             <bool>false</bool>
++            </property>
++           </widget>
++          </item>
+           <item>
+            <spacer name="verticalSpacer_6">
+             <property name="orientation">
+diff --git a/src/lib/platform/EiScreen.cpp b/src/lib/platform/EiScreen.cpp
+index 121e9dd..36d612c 100644
+--- a/src/lib/platform/EiScreen.cpp
++++ b/src/lib/platform/EiScreen.cpp
+@@ -806,10 +806,10 @@ void EiScreen::handleSystemEvent(const Event &)
+         m_eiSeat = ei_seat_ref(seat);
+         ei_seat_bind_capabilities(
+             m_eiSeat, EI_DEVICE_CAP_POINTER, EI_DEVICE_CAP_POINTER_ABSOLUTE, EI_DEVICE_CAP_KEYBOARD,
+-            EI_DEVICE_CAP_BUTTON, EI_DEVICE_CAP_SCROLL, nullptr
++            EI_DEVICE_CAP_BUTTON, EI_DEVICE_CAP_SCROLL,
++            m_isPrimary ? static_cast<ei_device_capability>(0) : EI_DEVICE_CAP_TOUCH, nullptr
+         );
+         LOG_DEBUG("ei: using seat %s", ei_seat_get_name(m_eiSeat));
+-        // we don't care about touch
+       }
+       break;
+     case EI_EVENT_DEVICE_ADDED:
+diff --git a/src/lib/platform/MSWindowsDesks.cpp b/src/lib/platform/MSWindowsDesks.cpp
+index 143425a..c883b3a 100644
+--- a/src/lib/platform/MSWindowsDesks.cpp
++++ b/src/lib/platform/MSWindowsDesks.cpp
+@@ -14,6 +14,7 @@
+ #include "base/Log.h"
+ #include "base/TMethodJob.h"
+ #include "deskflow/IScreenSaver.h"
++#include "deskflow/OptionTypes.h"
+ #include "deskflow/ScreenException.h"
+ #include "deskflow/win32/AppUtilWindows.h"
+ #include "mt/Lock.h"
+@@ -188,7 +189,10 @@ void MSWindowsDesks::setOptions(const OptionsList &options)
+   for (uint32_t i = 0, n = (uint32_t)options.size(); i < n; i += 2) {
+     if (options[i] == kOptionWin32KeepForeground) {
+       m_leaveForegroundOption = (options[i + 1] != 0);
+-      LOG_VERBOSE("%s the foreground window", m_leaveForegroundOption ? "don\'t grab" : "grab");
++      LOG_VERBOSE("%s the foreground window", m_leaveForegroundOption ? "don't grab" : "grab");
++    } else if (options[i] == kOptionForwardTouchscreenEvents) {
++      MSWindowsHook::setForwardTouchscreenEvents(options[i + 1] != 0);
++      LOG_VERBOSE("%s touchscreen event forwarding", (options[i + 1] != 0) ? "enabled" : "disabled");
+     }
+   }
+ }
+diff --git a/src/lib/platform/MSWindowsHook.cpp b/src/lib/platform/MSWindowsHook.cpp
+index c2ef1e1..197ea2c 100644
+--- a/src/lib/platform/MSWindowsHook.cpp
++++ b/src/lib/platform/MSWindowsHook.cpp
+@@ -36,6 +36,7 @@ static BYTE g_deadKeyState[256] = {0};
+ static BYTE g_keyState[256] = {0};
+ static DWORD g_hookThread = 0;
+ static bool g_fakeServerInput = false;
++static bool g_forwardTouchscreenEvents = true;
+ static BOOL g_isPrimary = TRUE;
+ 
+ MSWindowsHook::~MSWindowsHook()
+@@ -142,6 +143,11 @@ void MSWindowsHook::setMode(EHookMode mode)
+   g_mode = mode;
+ }
+ 
++void MSWindowsHook::setForwardTouchscreenEvents(bool on)
++{
++  g_forwardTouchscreenEvents = on;
++}
++
+ static void keyboardGetState(BYTE keys[256], DWORD vkCode, bool kf_up)
+ {
+   // we have to use GetAsyncKeyState() rather than GetKeyState() because
+@@ -440,6 +446,11 @@ static LRESULT CALLBACK keyboardLLHook(int code, WPARAM wParam, LPARAM lParam)
+       return CallNextHookEx(g_keyboardLL, code, wParam, lParam);
+     }
+ 
++    // On primary screen, skip injected (touchscreen) events when forwarding is disabled
++    if (g_isPrimary && injected && !g_forwardTouchscreenEvents) {
++      return CallNextHookEx(g_keyboardLL, code, wParam, lParam);
++    }
++
+     WPARAM wParam = info->vkCode;
+     LPARAM lParam = 1;                // repeat code
+     lParam |= (info->scanCode << 16); // scan code
+@@ -452,9 +463,9 @@ static LRESULT CALLBACK keyboardLLHook(int code, WPARAM wParam, LPARAM lParam)
+     if (info->flags & LLKHF_UP) {
+       lParam |= (1lu << 31); // transition
+     }
+-    // FIXME -- bit 30 should be set if key was already down but
+-    // we don't know that info.  as a result we'll never generate
+-    // key repeat events.
++    if (injected) {
++      lParam |= (1lu << 30); // injected flag (touchscreen)
++    }
+ 
+     // handle the message
+     if (keyboardHookHandler(wParam, lParam)) {
+diff --git a/src/lib/platform/MSWindowsHook.h b/src/lib/platform/MSWindowsHook.h
+index 438e734..75f7393 100644
+--- a/src/lib/platform/MSWindowsHook.h
++++ b/src/lib/platform/MSWindowsHook.h
+@@ -62,6 +62,8 @@ public:
+ 
+   void setMode(EHookMode mode);
+ 
++  static void setForwardTouchscreenEvents(bool on);
++
+   static EHookResult install();
+ 
+   static int uninstall();
+diff --git a/src/lib/server/Config.cpp b/src/lib/server/Config.cpp
+index c147635..a8f295a 100644
+--- a/src/lib/server/Config.cpp
++++ b/src/lib/server/Config.cpp
+@@ -676,6 +676,8 @@ void Config::readSectionOptions(ConfigReadContext &s)
+       addOption("", kOptionClipboardSharing, s.parseBoolean(value));
+     } else if (name == "clipboardSharingSize") {
+       addOption("", kOptionClipboardSharingSize, s.parseInt(value));
++    } else if (name == "forwardTouchscreenEvents") {
++      addOption("", kOptionForwardTouchscreenEvents, s.parseBoolean(value));
+     } else {
+       handled = false;
+     }
+@@ -1260,6 +1262,9 @@ const char *Config::getOptionName(OptionID id)
+   if (id == kOptionClipboardSharingSize) {
+     return "clipboardSharingSize";
+   }
++  if (id == kOptionForwardTouchscreenEvents) {
++    return "forwardTouchscreenEvents";
++  }
+   return nullptr;
+ }
+ 
+@@ -1269,7 +1274,7 @@ std::string Config::getOptionValue(OptionID id, OptionValue value)
+       id == kOptionScreenSwitchNeedsShift || id == kOptionScreenSwitchNeedsControl ||
+       id == kOptionScreenSwitchNeedsAlt || id == kOptionXTestXineramaUnaware || id == kOptionRelativeMouseMoves ||
+       id == kOptionWin32KeepForeground || id == kOptionScreenPreserveFocus || id == kOptionClipboardSharing ||
+-      id == kOptionClipboardSharingSize) {
++      id == kOptionClipboardSharingSize || id == kOptionForwardTouchscreenEvents) {
+     return (value != 0) ? "true" : "false";
+   }
+   if (id == kOptionModifierMapForShift || id == kOptionModifierMapForControl || id == kOptionModifierMapForAlt ||
+diff --git a/src/lib/server/Config.h b/src/lib/server/Config.h
+index 16b964c..82d201c 100644
+--- a/src/lib/server/Config.h
++++ b/src/lib/server/Config.h
+@@ -449,6 +449,18 @@ public:
+   static std::string formatInterval(const Interval &);
+   //@}
+ 
++  //! Get option name
++  /*!
++  Returns the name of an option.
++  */
++  static const char *getOptionName(OptionID);
++
++  //! Get option value
++  /*!
++  Returns an option value as a string.
++  */
++  static std::string getOptionValue(OptionID, OptionValue);
++
+ private:
+   void readSection(ConfigReadContext &);
+   void readSectionOptions(ConfigReadContext &);
+@@ -464,8 +476,6 @@ private:
+   );
+ 
+   void parseScreens(const ConfigReadContext &, const std::string_view &, std::set<std::string> &screens) const;
+-  static const char *getOptionName(OptionID);
+-  static std::string getOptionValue(OptionID, OptionValue);
+ 
+ private:
+   CellMap m_map;
+diff --git a/src/lib/server/Server.cpp b/src/lib/server/Server.cpp
+index b957d63..d013ef7 100644
+--- a/src/lib/server/Server.cpp
++++ b/src/lib/server/Server.cpp
+@@ -1124,6 +1124,11 @@ void Server::processOptions()
+       } else {
+         m_maximumClipboardSize = static_cast<size_t>(value);
+       }
++    } else if (id == kOptionForwardTouchscreenEvents) {
++      m_forwardTouchscreenEvents = (value != 0);
++      if (m_forwardTouchscreenEvents) {
++        LOG_INFO("touchscreen event forwarding is enabled");
++      }
+     }
+   }
+   if (m_relativeMoves && !newRelativeMoves) {
+diff --git a/src/lib/server/Server.h b/src/lib/server/Server.h
+index 424cf60..27b784d 100644
+--- a/src/lib/server/Server.h
++++ b/src/lib/server/Server.h
+@@ -472,4 +472,5 @@ private:
+   bool m_defaultLockToScreenState = false;
+   bool m_disableLockToScreen = false;
+   bool m_enableClipboard = true;
++  bool m_forwardTouchscreenEvents = false;
+ };
+diff --git a/src/unittests/server/ServerConfigTests.cpp b/src/unittests/server/ServerConfigTests.cpp
+index aa870a9..fa03705 100644
+--- a/src/unittests/server/ServerConfigTests.cpp
++++ b/src/unittests/server/ServerConfigTests.cpp
+@@ -57,6 +57,10 @@ void ServerConfigTests::equalityCheck()
+   b.getInputFilter()->addFilterRule(InputFilter::Rule{new OnlySystemFilter()});
+   QVERIFY(a.addAlias("screenA", "aliasA"));
+   QVERIFY(b.addAlias("screenA", "aliasA"));
++
++  // forwardTouchscreenEvents global option
++  QVERIFY(a.addOption(std::string(), kOptionForwardTouchscreenEvents, 1));
++  QVERIFY(b.addOption(std::string(), kOptionForwardTouchscreenEvents, 1));
+   /* TODO Fix linking to the proper libs
+   NetworkAddress addr1("localhost", 8080);
+   addr1.resolve();
+@@ -161,4 +165,61 @@ void ServerConfigTests::equalityCheck_diff_neighbours3()
+   QVERIFY(a != b);
+ }
+ 
++void ServerConfigTests::equalityCheck_diff_forwardTouchscreenEvents()
++{
++  Config a(nullptr);
++  Config b(nullptr);
++
++  QVERIFY(a.addScreen("screenA"));
++  QVERIFY(b.addScreen("screenA"));
++  QVERIFY(a.addOption(std::string(), kOptionForwardTouchscreenEvents, 0));
++  QVERIFY(b.addOption(std::string(), kOptionForwardTouchscreenEvents, 1));
++  QVERIFY(a != b);
++}
++
++void ServerConfigTests::forwardTouchscreenEvents_roundTrip()
++{
++  Config config(nullptr);
++  QVERIFY(config.addScreen("testScreen"));
++
++  // Set global forwardTouchscreenEvents to true
++  QVERIFY(config.addOption(std::string(), kOptionForwardTouchscreenEvents, 1));
++
++  // Verify it was set on global options
++  const auto *globalOpts = config.getOptions("");
++  QVERIFY(globalOpts != nullptr);
++  auto it = globalOpts->find(kOptionForwardTouchscreenEvents);
++  QVERIFY(it != globalOpts->end());
++  QCOMPARE(it->second, 1);
++
++  // Set per-screen forwardTouchscreenEvents to true
++  QVERIFY(config.addOption("testScreen", kOptionForwardTouchscreenEvents, 1));
++
++  // Verify it was set on screen options
++  const auto *screenOpts = config.getOptions("testScreen");
++  QVERIFY(screenOpts != nullptr);
++  it = screenOpts->find(kOptionForwardTouchscreenEvents);
++  QVERIFY(it != screenOpts->end());
++  QCOMPARE(it->second, 1);
++
++  // Remove the option
++  QVERIFY(config.removeOption(std::string(), kOptionForwardTouchscreenEvents));
++  globalOpts = config.getOptions("");
++  QVERIFY(globalOpts != nullptr);
++  it = globalOpts->find(kOptionForwardTouchscreenEvents);
++  QVERIFY(it == globalOpts->end());
++}
++
++void ServerConfigTests::forwardTouchscreenEvents_parseNameAndValue()
++{
++  // Verify the option name is correct
++  const char *name = Config::getOptionName(kOptionForwardTouchscreenEvents);
++  QVERIFY(name != nullptr);
++  QCOMPARE(name, "forwardTouchscreenEvents");
++
++  // Verify value mapping: 1 -> "true", 0 -> "false"
++  QCOMPARE(Config::getOptionValue(kOptionForwardTouchscreenEvents, 1), "true");
++  QCOMPARE(Config::getOptionValue(kOptionForwardTouchscreenEvents, 0), "false");
++}
++
+ QTEST_MAIN(ServerConfigTests)
+diff --git a/src/unittests/server/ServerConfigTests.h b/src/unittests/server/ServerConfigTests.h
+index 4bb2cf3..2a5d383 100644
+--- a/src/unittests/server/ServerConfigTests.h
++++ b/src/unittests/server/ServerConfigTests.h
+@@ -12,10 +12,13 @@ class ServerConfigTests : public QObject
+ private Q_SLOTS:
+   void equalityCheck();
+   void equalityCheck_diff_options();
++  void equalityCheck_diff_forwardTouchscreenEvents();
+   void equalityCheck_diff_alias();
+   void equalityCheck_diff_filters();
+   //  void equalityCheck_diff_address();
+   void equalityCheck_diff_neighbours1();
+   void equalityCheck_diff_neighbours2();
+   void equalityCheck_diff_neighbours3();
++  void forwardTouchscreenEvents_roundTrip();
++  void forwardTouchscreenEvents_parseNameAndValue();
+ };
+diff --git a/translations/deskflow_es.ts b/translations/deskflow_es.ts
+index d29fe9e..b51483b 100644
+--- a/translations/deskflow_es.ts
++++ b/translations/deskflow_es.ts
+@@ -1121,6 +1121,10 @@ Al habilitar esta opción, se deshabilitará la interfaz gráfica de usuario (GU
+         <source>Enable lock to computer at startup</source>
+         <translation type="unfinished">Activar el bloqueo del ordenador al iniciar</translation>
+     </message>
++    <message>
++        <source>Forward touchscreen events</source>
++        <translation type="unfinished"></translation>
++    </message>
+ </context>
+ <context>
+     <name>SettingsDialog</name>
+diff --git a/translations/deskflow_it.ts b/translations/deskflow_it.ts
+index 7334841..cdf92c4 100644
+--- a/translations/deskflow_it.ts
++++ b/translations/deskflow_it.ts
+@@ -1121,6 +1121,10 @@ L&apos;abilitazione di questa impostazione disabiliterà l&apos;interfaccia graf
+         <source>Enable lock to computer at startup</source>
+         <translation type="unfinished">Abilita il blocco al computer all&apos;avvio</translation>
+     </message>
++    <message>
++        <source>Forward touchscreen events</source>
++        <translation type="unfinished"></translation>
++    </message>
+ </context>
+ <context>
+     <name>SettingsDialog</name>
+diff --git a/translations/deskflow_ja.ts b/translations/deskflow_ja.ts
+index e93b0d5..941d1a1 100644
+--- a/translations/deskflow_ja.ts
++++ b/translations/deskflow_ja.ts
+@@ -1123,6 +1123,10 @@ Enabling this setting will disable the server config GUI.</source>
+         <source>Enable lock to computer at startup</source>
+         <translation>起動時にコンピューター間移動のロックを有効にする</translation>
+     </message>
++    <message>
++        <source>Forward touchscreen events</source>
++        <translation type="unfinished"></translation>
++    </message>
+ </context>
+ <context>
+     <name>SettingsDialog</name>
+diff --git a/translations/deskflow_ko.ts b/translations/deskflow_ko.ts
+index 4df41ed..be94a73 100644
+--- a/translations/deskflow_ko.ts
++++ b/translations/deskflow_ko.ts
+@@ -1121,6 +1121,10 @@ Enabling this setting will disable the server config GUI.</source>
+         <source>Enable lock to computer at startup</source>
+         <translation>시작 시 컴퓨터 잠금 사용</translation>
+     </message>
++    <message>
++        <source>Forward touchscreen events</source>
++        <translation type="unfinished"></translation>
++    </message>
+ </context>
+ <context>
+     <name>SettingsDialog</name>
+diff --git a/translations/deskflow_ru.ts b/translations/deskflow_ru.ts
+index fc5d6ab..927762c 100644
+--- a/translations/deskflow_ru.ts
++++ b/translations/deskflow_ru.ts
+@@ -1119,6 +1119,10 @@ Enabling this setting will disable the server config GUI.</source>
+         <source>Enable lock to computer at startup</source>
+         <translation>Включать привязку к компьютеру при запуске</translation>
+     </message>
++    <message>
++        <source>Forward touchscreen events</source>
++        <translation type="unfinished"></translation>
++    </message>
+ </context>
+ <context>
+     <name>SettingsDialog</name>
+diff --git a/translations/deskflow_zh_CN.ts b/translations/deskflow_zh_CN.ts
+index 667bd7c..2dcebec 100644
+--- a/translations/deskflow_zh_CN.ts
++++ b/translations/deskflow_zh_CN.ts
+@@ -1123,6 +1123,10 @@ Enabling this setting will disable the server config GUI.</source>
+         <source>Enable lock to computer at startup</source>
+         <translation type="unfinished">启动时启用锁定到计算机</translation>
+     </message>
++    <message>
++        <source>Forward touchscreen events</source>
++        <translation type="unfinished"></translation>
++    </message>
+ </context>
+ <context>
+     <name>SettingsDialog</name>

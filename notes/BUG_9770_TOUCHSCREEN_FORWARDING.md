@@ -61,9 +61,22 @@ The key issue is in how the server handles input events from its own (now inacti
 
 ## Solution Approach
 
-The fix requires two parts:
+### Design Decision: Server-Side Single Toggle
 
-### Part 1: Config Option (IMPLEMENTED in patch)
+After analysis, the cleanest solution is a **single server-side configuration option** that controls touch event forwarding for all machines:
+
+- **OFF (default):** Touch events stay on the local machine where they originated. If you touch the Windows machine's screen, Windows handles it locally. If you touch a Linux machine's screen, Linux handles it locally. The server never forwards touch events to any client.
+- **ON:** Touch events are forwarded to whichever machine has the mouse cursor (legacy behavior).
+
+This design is superior to per-machine configuration because:
+1. **Simple:** One toggle on the server, no per-machine settings needed
+2. **Consistent:** All machines behave the same way — touch stays local
+3. **Intuitive:** The server admin configures it once; clients don't need to know about it
+4. **Scalable:** Works with any number of machines, not just two
+
+The option is placed in the **Server Config dialog** (not the Client Config dialog) because it's a server-side setting that controls the server's behavior. Since either machine can be the server, the option is accessible from whichever machine is currently acting as server.
+
+### Part 1: Config Option (IMPLEMENTED)
 
 Add a new server option `forwardTouchscreenEvents` that controls whether touch-generated input events should be forwarded to clients.
 
@@ -136,6 +149,28 @@ Three new tests in `ServerConfigTests`:
 | MSWindowsHook.cpp behavior change | DONE |
 | EiScreen touch support | DONE (seat binding) |
 | Manual testing on Windows | PENDING |
+
+## Design Decision Record
+
+### Why Server-Side Only?
+
+**Question:** Should the `forwardTouchscreenEvents` option be on both the server and client dialogs?
+
+**Answer:** No. The option is server-side only. Here's why:
+
+1. **The server makes forwarding decisions.** The client never decides whether to forward events — it just receives whatever the server sends. Putting the option on the client would be misleading.
+
+2. **Either machine can be the server.** Since deskflow is peer-to-peer (any machine can be server or client), the option is accessible from whichever machine is currently the server. No need to duplicate it.
+
+3. **Single source of truth.** Having one toggle on the server avoids conflicting settings between machines. If both client and server had the option, which one wins?
+
+4. **Scalable to N machines.** With multiple machines, having per-machine touch forwarding settings would be a combinatorial nightmare. One server toggle controls all machines.
+
+### Why Default to OFF?
+
+**Question:** Why default to `false` (don't forward) instead of `true` (forward)?
+
+**Answer:** Because the bug report says the current behavior (always forwarding) is broken. The user expects touch events to stay on the local machine. Defaulting to `false` fixes the bug out of the box. Users who want the old behavior can opt-in by setting it to `true`.
 
 ## Related
 

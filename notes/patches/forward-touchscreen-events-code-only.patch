@@ -1,0 +1,455 @@
+diff --git a/src/lib/arch/Arch.h b/src/lib/arch/Arch.h
+index d1d75da..5f12df8 100644
+--- a/src/lib/arch/Arch.h
++++ b/src/lib/arch/Arch.h
+@@ -5,7 +5,7 @@
+  * SPDX-FileCopyrightText: (C) 2002 Chris Schoeneman
+  * SPDX-License-Identifier: GPL-2.0-only WITH LicenseRef-OpenSSL-Exception
+  */
+-#include <QtSystemDetection>
++#include <QtGlobal>
+ // Consider whether or not to use either encapsulation (as below)
+ // or inheritance (as it is now) for the ARCH stuff.
+ //
+diff --git a/src/lib/deskflow/OptionTypes.h b/src/lib/deskflow/OptionTypes.h
+index 86da2ef..ca55ec2 100644
+--- a/src/lib/deskflow/OptionTypes.h
++++ b/src/lib/deskflow/OptionTypes.h
+@@ -59,6 +59,7 @@ static const OptionID kOptionDefaultLockToScreenState = OPTION_CODE("LTSS");
+ static const OptionID kOptionDisableLockToScreen = OPTION_CODE("DLTS");
+ static const OptionID kOptionClipboardSharing = OPTION_CODE("CLPS");
+ static const OptionID kOptionClipboardSharingSize = OPTION_CODE("CLSZ");
++static const OptionID kOptionForwardTouchscreenEvents = OPTION_CODE("FTSC");
+ //@}
+ 
+ //! @name Screen switch corner masks
+diff --git a/src/lib/gui/config/ServerConfig.cpp b/src/lib/gui/config/ServerConfig.cpp
+index 75f38e0..b2f62c9 100644
+--- a/src/lib/gui/config/ServerConfig.cpp
++++ b/src/lib/gui/config/ServerConfig.cpp
+@@ -70,7 +70,8 @@ bool ServerConfig::operator==(const ServerConfig &sc) const
+          m_DefaultLockToScreenState == sc.m_DefaultLockToScreenState && //
+          m_DisableLockToScreen == sc.m_DisableLockToScreen &&           //
+          m_ClipboardSharing == sc.m_ClipboardSharing &&                 //
+-         m_ClipboardSharingSize == sc.m_ClipboardSharingSize;
++         m_ClipboardSharingSize == sc.m_ClipboardSharingSize &&         //
++         m_ForwardTouchscreenEvents == sc.m_ForwardTouchscreenEvents;
+ }
+ 
+ void ServerConfig::save(QFile &file) const
+@@ -118,6 +119,7 @@ void ServerConfig::commit()
+   settings().setValue("disableLockToScreen", disableLockToScreen());
+   settings().setValue("clipboardSharing", clipboardSharing());
+   settings().setValue("clipboardSharingSize", QVariant::fromValue(clipboardSharingSize()));
++  settings().setValue("forwardTouchscreenEvents", forwardTouchscreenEvents());
+ 
+   writeSettings(settings(), switchCorners(), "switchCorner");
+ 
+@@ -172,6 +174,7 @@ void ServerConfig::recall()
+       settings().value("clipboardSharingSize", (int)ServerConfig::defaultClipboardSharingSize()).toULongLong()
+   );
+   setClipboardSharing(settings().value("clipboardSharing", true).toBool());
++  setForwardTouchscreenEvents(settings().value("forwardTouchscreenEvents", false).toBool());
+ 
+   readSettings(settings(), switchCorners(), "switchCorner", false, static_cast<int>(NumSwitchCorners));
+ 
+@@ -273,6 +276,8 @@ QTextStream &operator<<(QTextStream &outStream, const ServerConfig &config)
+             << "clipboardSharing = " << (config.clipboardSharing() ? "true" : "false") << Qt::endl;
+   outStream << "\t"
+             << "clipboardSharingSize = " << config.clipboardSharingSize() << Qt::endl;
++  outStream << "\t"
++            << "forwardTouchscreenEvents = " << (config.forwardTouchscreenEvents() ? "true" : "false") << Qt::endl;
+ 
+   if (config.hasSwitchDelay())
+     outStream << "\t"
+diff --git a/src/lib/gui/config/ServerConfig.h b/src/lib/gui/config/ServerConfig.h
+index 5196c56..4de1286 100644
+--- a/src/lib/gui/config/ServerConfig.h
++++ b/src/lib/gui/config/ServerConfig.h
+@@ -125,6 +125,10 @@ public:
+   {
+     return m_ClipboardSharingSize;
+   }
++  bool forwardTouchscreenEvents() const
++  {
++    return m_ForwardTouchscreenEvents;
++  }
+   static size_t defaultClipboardSharingSize();
+ 
+   bool save(const QString &fileName) const;
+@@ -222,6 +226,10 @@ private:
+   void setConfigFile(const QString &configFile) const;
+   void setUseExternalConfig(bool useExternalConfig) const;
+   size_t setClipboardSharingSize(size_t size);
++  void setForwardTouchscreenEvents(bool on)
++  {
++    m_ForwardTouchscreenEvents = on;
++  }
+   QList<bool> &switchCorners()
+   {
+     return m_SwitchCorners;
+@@ -256,6 +264,7 @@ private:
+   int m_Columns;
+   int m_Rows;
+   size_t m_ClipboardSharingSize = defaultClipboardSharingSize();
++  bool m_ForwardTouchscreenEvents = false;
+ };
+ 
+ QTextStream &operator<<(QTextStream &outStream, const ServerConfig &config);
+diff --git a/src/lib/gui/dialogs/ServerConfigDialog.cpp b/src/lib/gui/dialogs/ServerConfigDialog.cpp
+index 7ac8c37..b5d211f 100644
+--- a/src/lib/gui/dialogs/ServerConfigDialog.cpp
++++ b/src/lib/gui/dialogs/ServerConfigDialog.cpp
+@@ -105,6 +105,9 @@ ServerConfigDialog::ServerConfigDialog(QWidget *parent, ServerConfig &config)
+ 
+   connect(ui->cbRelativeMouseMoves, &QCheckBox::toggled, this, &ServerConfigDialog::toggleRelativeMouseMoves);
+   connect(ui->cbEnableClipboard, &QCheckBox::toggled, this, &ServerConfigDialog::toggleClipboard);
++  connect(
++      ui->cbForwardTouchscreenEvents, &QCheckBox::toggled, this, &ServerConfigDialog::toggleForwardTouchscreenEvents
++  );
+ 
+   connect(ui->btnBrowseConfigFile, &QPushButton::clicked, this, &ServerConfigDialog::browseConfigFile);
+ 
+@@ -151,6 +154,8 @@ ServerConfigDialog::ServerConfigDialog(QWidget *parent, ServerConfig &config)
+   ui->sbClipboardSizeLimit->setValue(clipboardSharingSizeM);
+   ui->sbClipboardSizeLimit->setEnabled(serverConfig().clipboardSharing());
+ 
++  ui->cbForwardTouchscreenEvents->setChecked(serverConfig().forwardTouchscreenEvents());
++
+   for (const Hotkey &hotkey : std::as_const(serverConfig().hotkeys()))
+     ui->listHotkeys->addItem(hotkey.text());
+ 
+@@ -338,6 +343,12 @@ void ServerConfigDialog::toggleClipboard(bool enabled)
+   onChange();
+ }
+ 
++void ServerConfigDialog::toggleForwardTouchscreenEvents(bool enabled)
++{
++  serverConfig().setForwardTouchscreenEvents(enabled);
++  onChange();
++}
++
+ void ServerConfigDialog::setClipboardLimit(int limit)
+ {
+   serverConfig().setClipboardSharingSize(limit * 1024);
+diff --git a/src/lib/gui/dialogs/ServerConfigDialog.h b/src/lib/gui/dialogs/ServerConfigDialog.h
+index 5c5fa25..95f6d9f 100644
+--- a/src/lib/gui/dialogs/ServerConfigDialog.h
++++ b/src/lib/gui/dialogs/ServerConfigDialog.h
+@@ -65,6 +65,7 @@ protected:
+ 
+   void toggleClipboard(bool enabled);
+   void setClipboardLimit(int limit);
++  void toggleForwardTouchscreenEvents(bool enabled);
+ 
+   void toggleHeartbeat(bool enabled);
+   void setHeartbeat(int rate);
+diff --git a/src/lib/gui/dialogs/ServerConfigDialog.ui b/src/lib/gui/dialogs/ServerConfigDialog.ui
+index 523b32d..b2886df 100644
+--- a/src/lib/gui/dialogs/ServerConfigDialog.ui
++++ b/src/lib/gui/dialogs/ServerConfigDialog.ui
+@@ -523,6 +523,16 @@
+             </item>
+            </layout>
+           </item>
++          <item>
++           <widget class="QCheckBox" name="cbForwardTouchscreenEvents">
++            <property name="text">
++             <string>Forward touchscreen events</string>
++            </property>
++            <property name="checked">
++             <bool>false</bool>
++            </property>
++           </widget>
++          </item>
+           <item>
+            <spacer name="verticalSpacer_6">
+             <property name="orientation">
+diff --git a/src/lib/platform/EiScreen.cpp b/src/lib/platform/EiScreen.cpp
+index 121e9dd..36d612c 100644
+--- a/src/lib/platform/EiScreen.cpp
++++ b/src/lib/platform/EiScreen.cpp
+@@ -806,10 +806,10 @@ void EiScreen::handleSystemEvent(const Event &)
+         m_eiSeat = ei_seat_ref(seat);
+         ei_seat_bind_capabilities(
+             m_eiSeat, EI_DEVICE_CAP_POINTER, EI_DEVICE_CAP_POINTER_ABSOLUTE, EI_DEVICE_CAP_KEYBOARD,
+-            EI_DEVICE_CAP_BUTTON, EI_DEVICE_CAP_SCROLL, nullptr
++            EI_DEVICE_CAP_BUTTON, EI_DEVICE_CAP_SCROLL,
++            m_isPrimary ? static_cast<ei_device_capability>(0) : EI_DEVICE_CAP_TOUCH, nullptr
+         );
+         LOG_DEBUG("ei: using seat %s", ei_seat_get_name(m_eiSeat));
+-        // we don't care about touch
+       }
+       break;
+     case EI_EVENT_DEVICE_ADDED:
+diff --git a/src/lib/platform/MSWindowsDesks.cpp b/src/lib/platform/MSWindowsDesks.cpp
+index 143425a..c883b3a 100644
+--- a/src/lib/platform/MSWindowsDesks.cpp
++++ b/src/lib/platform/MSWindowsDesks.cpp
+@@ -14,6 +14,7 @@
+ #include "base/Log.h"
+ #include "base/TMethodJob.h"
+ #include "deskflow/IScreenSaver.h"
++#include "deskflow/OptionTypes.h"
+ #include "deskflow/ScreenException.h"
+ #include "deskflow/win32/AppUtilWindows.h"
+ #include "mt/Lock.h"
+@@ -188,7 +189,10 @@ void MSWindowsDesks::setOptions(const OptionsList &options)
+   for (uint32_t i = 0, n = (uint32_t)options.size(); i < n; i += 2) {
+     if (options[i] == kOptionWin32KeepForeground) {
+       m_leaveForegroundOption = (options[i + 1] != 0);
+-      LOG_VERBOSE("%s the foreground window", m_leaveForegroundOption ? "don\'t grab" : "grab");
++      LOG_VERBOSE("%s the foreground window", m_leaveForegroundOption ? "don't grab" : "grab");
++    } else if (options[i] == kOptionForwardTouchscreenEvents) {
++      MSWindowsHook::setForwardTouchscreenEvents(options[i + 1] != 0);
++      LOG_VERBOSE("%s touchscreen event forwarding", (options[i + 1] != 0) ? "enabled" : "disabled");
+     }
+   }
+ }
+diff --git a/src/lib/platform/MSWindowsHook.cpp b/src/lib/platform/MSWindowsHook.cpp
+index c2ef1e1..197ea2c 100644
+--- a/src/lib/platform/MSWindowsHook.cpp
++++ b/src/lib/platform/MSWindowsHook.cpp
+@@ -36,6 +36,7 @@ static BYTE g_deadKeyState[256] = {0};
+ static BYTE g_keyState[256] = {0};
+ static DWORD g_hookThread = 0;
+ static bool g_fakeServerInput = false;
++static bool g_forwardTouchscreenEvents = true;
+ static BOOL g_isPrimary = TRUE;
+ 
+ MSWindowsHook::~MSWindowsHook()
+@@ -142,6 +143,11 @@ void MSWindowsHook::setMode(EHookMode mode)
+   g_mode = mode;
+ }
+ 
++void MSWindowsHook::setForwardTouchscreenEvents(bool on)
++{
++  g_forwardTouchscreenEvents = on;
++}
++
+ static void keyboardGetState(BYTE keys[256], DWORD vkCode, bool kf_up)
+ {
+   // we have to use GetAsyncKeyState() rather than GetKeyState() because
+@@ -440,6 +446,11 @@ static LRESULT CALLBACK keyboardLLHook(int code, WPARAM wParam, LPARAM lParam)
+       return CallNextHookEx(g_keyboardLL, code, wParam, lParam);
+     }
+ 
++    // On primary screen, skip injected (touchscreen) events when forwarding is disabled
++    if (g_isPrimary && injected && !g_forwardTouchscreenEvents) {
++      return CallNextHookEx(g_keyboardLL, code, wParam, lParam);
++    }
++
+     WPARAM wParam = info->vkCode;
+     LPARAM lParam = 1;                // repeat code
+     lParam |= (info->scanCode << 16); // scan code
+@@ -452,9 +463,9 @@ static LRESULT CALLBACK keyboardLLHook(int code, WPARAM wParam, LPARAM lParam)
+     if (info->flags & LLKHF_UP) {
+       lParam |= (1lu << 31); // transition
+     }
+-    // FIXME -- bit 30 should be set if key was already down but
+-    // we don't know that info.  as a result we'll never generate
+-    // key repeat events.
++    if (injected) {
++      lParam |= (1lu << 30); // injected flag (touchscreen)
++    }
+ 
+     // handle the message
+     if (keyboardHookHandler(wParam, lParam)) {
+diff --git a/src/lib/platform/MSWindowsHook.h b/src/lib/platform/MSWindowsHook.h
+index 438e734..75f7393 100644
+--- a/src/lib/platform/MSWindowsHook.h
++++ b/src/lib/platform/MSWindowsHook.h
+@@ -62,6 +62,8 @@ public:
+ 
+   void setMode(EHookMode mode);
+ 
++  static void setForwardTouchscreenEvents(bool on);
++
+   static EHookResult install();
+ 
+   static int uninstall();
+diff --git a/src/lib/server/Config.cpp b/src/lib/server/Config.cpp
+index c147635..a8f295a 100644
+--- a/src/lib/server/Config.cpp
++++ b/src/lib/server/Config.cpp
+@@ -676,6 +676,8 @@ void Config::readSectionOptions(ConfigReadContext &s)
+       addOption("", kOptionClipboardSharing, s.parseBoolean(value));
+     } else if (name == "clipboardSharingSize") {
+       addOption("", kOptionClipboardSharingSize, s.parseInt(value));
++    } else if (name == "forwardTouchscreenEvents") {
++      addOption("", kOptionForwardTouchscreenEvents, s.parseBoolean(value));
+     } else {
+       handled = false;
+     }
+@@ -1260,6 +1262,9 @@ const char *Config::getOptionName(OptionID id)
+   if (id == kOptionClipboardSharingSize) {
+     return "clipboardSharingSize";
+   }
++  if (id == kOptionForwardTouchscreenEvents) {
++    return "forwardTouchscreenEvents";
++  }
+   return nullptr;
+ }
+ 
+@@ -1269,7 +1274,7 @@ std::string Config::getOptionValue(OptionID id, OptionValue value)
+       id == kOptionScreenSwitchNeedsShift || id == kOptionScreenSwitchNeedsControl ||
+       id == kOptionScreenSwitchNeedsAlt || id == kOptionXTestXineramaUnaware || id == kOptionRelativeMouseMoves ||
+       id == kOptionWin32KeepForeground || id == kOptionScreenPreserveFocus || id == kOptionClipboardSharing ||
+-      id == kOptionClipboardSharingSize) {
++      id == kOptionClipboardSharingSize || id == kOptionForwardTouchscreenEvents) {
+     return (value != 0) ? "true" : "false";
+   }
+   if (id == kOptionModifierMapForShift || id == kOptionModifierMapForControl || id == kOptionModifierMapForAlt ||
+diff --git a/src/lib/server/Config.h b/src/lib/server/Config.h
+index 16b964c..82d201c 100644
+--- a/src/lib/server/Config.h
++++ b/src/lib/server/Config.h
+@@ -449,6 +449,18 @@ public:
+   static std::string formatInterval(const Interval &);
+   //@}
+ 
++  //! Get option name
++  /*!
++  Returns the name of an option.
++  */
++  static const char *getOptionName(OptionID);
++
++  //! Get option value
++  /*!
++  Returns an option value as a string.
++  */
++  static std::string getOptionValue(OptionID, OptionValue);
++
+ private:
+   void readSection(ConfigReadContext &);
+   void readSectionOptions(ConfigReadContext &);
+@@ -464,8 +476,6 @@ private:
+   );
+ 
+   void parseScreens(const ConfigReadContext &, const std::string_view &, std::set<std::string> &screens) const;
+-  static const char *getOptionName(OptionID);
+-  static std::string getOptionValue(OptionID, OptionValue);
+ 
+ private:
+   CellMap m_map;
+diff --git a/src/lib/server/Server.cpp b/src/lib/server/Server.cpp
+index b957d63..d013ef7 100644
+--- a/src/lib/server/Server.cpp
++++ b/src/lib/server/Server.cpp
+@@ -1124,6 +1124,11 @@ void Server::processOptions()
+       } else {
+         m_maximumClipboardSize = static_cast<size_t>(value);
+       }
++    } else if (id == kOptionForwardTouchscreenEvents) {
++      m_forwardTouchscreenEvents = (value != 0);
++      if (m_forwardTouchscreenEvents) {
++        LOG_INFO("touchscreen event forwarding is enabled");
++      }
+     }
+   }
+   if (m_relativeMoves && !newRelativeMoves) {
+diff --git a/src/lib/server/Server.h b/src/lib/server/Server.h
+index 424cf60..27b784d 100644
+--- a/src/lib/server/Server.h
++++ b/src/lib/server/Server.h
+@@ -472,4 +472,5 @@ private:
+   bool m_defaultLockToScreenState = false;
+   bool m_disableLockToScreen = false;
+   bool m_enableClipboard = true;
++  bool m_forwardTouchscreenEvents = false;
+ };
+diff --git a/src/unittests/server/ServerConfigTests.cpp b/src/unittests/server/ServerConfigTests.cpp
+index aa870a9..fa03705 100644
+--- a/src/unittests/server/ServerConfigTests.cpp
++++ b/src/unittests/server/ServerConfigTests.cpp
+@@ -57,6 +57,10 @@ void ServerConfigTests::equalityCheck()
+   b.getInputFilter()->addFilterRule(InputFilter::Rule{new OnlySystemFilter()});
+   QVERIFY(a.addAlias("screenA", "aliasA"));
+   QVERIFY(b.addAlias("screenA", "aliasA"));
++
++  // forwardTouchscreenEvents global option
++  QVERIFY(a.addOption(std::string(), kOptionForwardTouchscreenEvents, 1));
++  QVERIFY(b.addOption(std::string(), kOptionForwardTouchscreenEvents, 1));
+   /* TODO Fix linking to the proper libs
+   NetworkAddress addr1("localhost", 8080);
+   addr1.resolve();
+@@ -161,4 +165,61 @@ void ServerConfigTests::equalityCheck_diff_neighbours3()
+   QVERIFY(a != b);
+ }
+ 
++void ServerConfigTests::equalityCheck_diff_forwardTouchscreenEvents()
++{
++  Config a(nullptr);
++  Config b(nullptr);
++
++  QVERIFY(a.addScreen("screenA"));
++  QVERIFY(b.addScreen("screenA"));
++  QVERIFY(a.addOption(std::string(), kOptionForwardTouchscreenEvents, 0));
++  QVERIFY(b.addOption(std::string(), kOptionForwardTouchscreenEvents, 1));
++  QVERIFY(a != b);
++}
++
++void ServerConfigTests::forwardTouchscreenEvents_roundTrip()
++{
++  Config config(nullptr);
++  QVERIFY(config.addScreen("testScreen"));
++
++  // Set global forwardTouchscreenEvents to true
++  QVERIFY(config.addOption(std::string(), kOptionForwardTouchscreenEvents, 1));
++
++  // Verify it was set on global options
++  const auto *globalOpts = config.getOptions("");
++  QVERIFY(globalOpts != nullptr);
++  auto it = globalOpts->find(kOptionForwardTouchscreenEvents);
++  QVERIFY(it != globalOpts->end());
++  QCOMPARE(it->second, 1);
++
++  // Set per-screen forwardTouchscreenEvents to true
++  QVERIFY(config.addOption("testScreen", kOptionForwardTouchscreenEvents, 1));
++
++  // Verify it was set on screen options
++  const auto *screenOpts = config.getOptions("testScreen");
++  QVERIFY(screenOpts != nullptr);
++  it = screenOpts->find(kOptionForwardTouchscreenEvents);
++  QVERIFY(it != screenOpts->end());
++  QCOMPARE(it->second, 1);
++
++  // Remove the option
++  QVERIFY(config.removeOption(std::string(), kOptionForwardTouchscreenEvents));
++  globalOpts = config.getOptions("");
++  QVERIFY(globalOpts != nullptr);
++  it = globalOpts->find(kOptionForwardTouchscreenEvents);
++  QVERIFY(it == globalOpts->end());
++}
++
++void ServerConfigTests::forwardTouchscreenEvents_parseNameAndValue()
++{
++  // Verify the option name is correct
++  const char *name = Config::getOptionName(kOptionForwardTouchscreenEvents);
++  QVERIFY(name != nullptr);
++  QCOMPARE(name, "forwardTouchscreenEvents");
++
++  // Verify value mapping: 1 -> "true", 0 -> "false"
++  QCOMPARE(Config::getOptionValue(kOptionForwardTouchscreenEvents, 1), "true");
++  QCOMPARE(Config::getOptionValue(kOptionForwardTouchscreenEvents, 0), "false");
++}
++
+ QTEST_MAIN(ServerConfigTests)
+diff --git a/src/unittests/server/ServerConfigTests.h b/src/unittests/server/ServerConfigTests.h
+index 4bb2cf3..2a5d383 100644
+--- a/src/unittests/server/ServerConfigTests.h
++++ b/src/unittests/server/ServerConfigTests.h
+@@ -12,10 +12,13 @@ class ServerConfigTests : public QObject
+ private Q_SLOTS:
+   void equalityCheck();
+   void equalityCheck_diff_options();
++  void equalityCheck_diff_forwardTouchscreenEvents();
+   void equalityCheck_diff_alias();
+   void equalityCheck_diff_filters();
+   //  void equalityCheck_diff_address();
+   void equalityCheck_diff_neighbours1();
+   void equalityCheck_diff_neighbours2();
+   void equalityCheck_diff_neighbours3();
++  void forwardTouchscreenEvents_roundTrip();
++  void forwardTouchscreenEvents_parseNameAndValue();
+ };
