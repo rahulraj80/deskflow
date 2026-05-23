@@ -1550,8 +1550,10 @@ void Server::onScreensaver(bool activated)
 
 void Server::onKeyDown(KeyID id, KeyModifierMask mask, KeyButton button, const std::string &lang, const char *screens)
 {
-  LOG_VERBOSE("onKeyDown id=%d mask=0x%04x button=0x%04x lang=%s screen=%s", id, mask, button, lang.c_str(),
-              m_active ? getName(m_active).c_str() : "null");
+  LOG_VERBOSE(
+      "onKeyDown id=%d mask=0x%04x button=0x%04x lang=%s screen=%s", id, mask, button, lang.c_str(),
+      m_active ? getName(m_active).c_str() : "null"
+  );
   assert(m_active != nullptr);
 
   // relay
@@ -1627,9 +1629,10 @@ void Server::onMouseUp(ButtonID id)
 
 bool Server::onMouseMovePrimary(int32_t x, int32_t y)
 {
-  LOG_VERBOSE("onMouseMovePrimary %d,%d active=%s primary=%s", x, y,
-              m_active ? getName(m_active).c_str() : "null",
-              m_primaryClient ? getName(m_primaryClient).c_str() : "null");
+  LOG_VERBOSE(
+      "onMouseMovePrimary %d,%d active=%s primary=%s", x, y, m_active ? getName(m_active).c_str() : "null",
+      m_primaryClient ? getName(m_primaryClient).c_str() : "null"
+  );
 
   // mouse move on primary (server's) screen
   if (m_active != m_primaryClient) {
