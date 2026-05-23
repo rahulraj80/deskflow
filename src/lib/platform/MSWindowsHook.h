@@ -62,6 +62,8 @@ public:
 
   void setMode(EHookMode mode);
 
+  static void setForwardTouchscreenEvents(bool on);
+
   static EHookResult install();
 
   static int uninstall();

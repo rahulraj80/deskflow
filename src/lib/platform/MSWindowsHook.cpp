@@ -36,6 +36,7 @@ static BYTE g_deadKeyState[256] = {0};
 static BYTE g_keyState[256] = {0};
 static DWORD g_hookThread = 0;
 static bool g_fakeServerInput = false;
+static bool g_forwardTouchscreenEvents = true;
 static BOOL g_isPrimary = TRUE;
 
 MSWindowsHook::~MSWindowsHook()
@@ -140,6 +141,11 @@ void MSWindowsHook::setMode(EHookMode mode)
     return;
   }
   g_mode = mode;
+}
+
+void MSWindowsHook::setForwardTouchscreenEvents(bool on)
+{
+  g_forwardTouchscreenEvents = on;
 }
 
 static void keyboardGetState(BYTE keys[256], DWORD vkCode, bool kf_up)
@@ -440,6 +446,11 @@ static LRESULT CALLBACK keyboardLLHook(int code, WPARAM wParam, LPARAM lParam)
       return CallNextHookEx(g_keyboardLL, code, wParam, lParam);
     }
 
+    // On primary screen, skip injected (touchscreen) events when forwarding is disabled
+    if (g_isPrimary && injected && !g_forwardTouchscreenEvents) {
+      return CallNextHookEx(g_keyboardLL, code, wParam, lParam);
+    }
+
     WPARAM wParam = info->vkCode;
     LPARAM lParam = 1;                // repeat code
     lParam |= (info->scanCode << 16); // scan code
@@ -452,9 +463,9 @@ static LRESULT CALLBACK keyboardLLHook(int code, WPARAM wParam, LPARAM lParam)
     if (info->flags & LLKHF_UP) {
       lParam |= (1lu << 31); // transition
     }
-    // FIXME -- bit 30 should be set if key was already down but
-    // we don't know that info.  as a result we'll never generate
-    // key repeat events.
+    if (injected) {
+      lParam |= (1lu << 30); // injected flag (touchscreen)
+    }
 
     // handle the message
     if (keyboardHookHandler(wParam, lParam)) {

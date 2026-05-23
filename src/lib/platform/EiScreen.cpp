@@ -806,10 +806,11 @@ void EiScreen::handleSystemEvent(const Event &)
         m_eiSeat = ei_seat_ref(seat);
         ei_seat_bind_capabilities(
             m_eiSeat, EI_DEVICE_CAP_POINTER, EI_DEVICE_CAP_POINTER_ABSOLUTE, EI_DEVICE_CAP_KEYBOARD,
-            EI_DEVICE_CAP_BUTTON, EI_DEVICE_CAP_SCROLL, nullptr
+            EI_DEVICE_CAP_BUTTON, EI_DEVICE_CAP_SCROLL,
+            m_isPrimary ? nullptr : EI_DEVICE_CAP_TOUCH,
+            nullptr
         );
         LOG_DEBUG("ei: using seat %s", ei_seat_get_name(m_eiSeat));
-        // we don't care about touch
       }
       break;
     case EI_EVENT_DEVICE_ADDED:

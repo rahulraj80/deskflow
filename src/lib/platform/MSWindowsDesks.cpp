@@ -14,6 +14,7 @@
 #include "base/Log.h"
 #include "base/TMethodJob.h"
 #include "deskflow/IScreenSaver.h"
+#include "deskflow/OptionTypes.h"
 #include "deskflow/ScreenException.h"
 #include "deskflow/win32/AppUtilWindows.h"
 #include "mt/Lock.h"
@@ -188,7 +189,10 @@ void MSWindowsDesks::setOptions(const OptionsList &options)
   for (uint32_t i = 0, n = (uint32_t)options.size(); i < n; i += 2) {
     if (options[i] == kOptionWin32KeepForeground) {
       m_leaveForegroundOption = (options[i + 1] != 0);
-      LOG_VERBOSE("%s the foreground window", m_leaveForegroundOption ? "don\'t grab" : "grab");
+      LOG_VERBOSE("%s the foreground window", m_leaveForegroundOption ? "don't grab" : "grab");
+    } else if (options[i] == kOptionForwardTouchscreenEvents) {
+      MSWindowsHook::setForwardTouchscreenEvents(options[i + 1] != 0);
+      LOG_VERBOSE("%s touchscreen event forwarding", (options[i + 1] != 0) ? "enabled" : "disabled");
     }
   }
 }
