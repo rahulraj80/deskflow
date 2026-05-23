@@ -807,8 +807,7 @@ void EiScreen::handleSystemEvent(const Event &)
         ei_seat_bind_capabilities(
             m_eiSeat, EI_DEVICE_CAP_POINTER, EI_DEVICE_CAP_POINTER_ABSOLUTE, EI_DEVICE_CAP_KEYBOARD,
             EI_DEVICE_CAP_BUTTON, EI_DEVICE_CAP_SCROLL,
-            m_isPrimary ? static_cast<ei_device_capability>(0) : EI_DEVICE_CAP_TOUCH,
-            nullptr
+            m_isPrimary ? static_cast<ei_device_capability>(0) : EI_DEVICE_CAP_TOUCH, nullptr
         );
         LOG_DEBUG("ei: using seat %s", ei_seat_get_name(m_eiSeat));
       }
