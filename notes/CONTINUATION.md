@@ -5,23 +5,28 @@ This file records what was being done and how to resume if interrupted.
 
 ---
 
-## 2026-05-23 — Session Resume (x86_64 machine)
+## 2026-05-23 — Build Complete, CI Running
 
-**What was being done:**
-- Recovered context from CLAUDE.md, notes/ folder, and patch file
-- Patch already applied and pushed (Part 1: config option infrastructure)
-- Implemented Part 2 (MSWindowsHook behavior change) and Part 3 (EiScreen touch support)
-- Pushed all 2 commits to master
+**Status:** All code changes complete. Local build passes. CI in progress.
+
+**What was done:**
+1. Installed all build dependencies from dnf (Qt 6.11.1, libei 1.5.0, libportal 0.9.1)
+2. Fixed EiScreen.cpp ternary type mismatch
+3. Fixed Config.h public access for getOptionName/getOptionValue
+4. Built entire project successfully
+5. All 25 unit tests pass
+6. Pushed 3 commits to master
+
+**Commits pushed:**
+- `8db843d` — Config option infrastructure + tests (Part 1)
+- `1fd3fc4` — Hook behavior change + EiScreen touch support (Parts 2 & 3)
+- `cff8285` — Fix build errors (type cast, public access)
+
+**CI status:**
+- First run: failed on lint-clang (before build fixes)
+- Second run: in progress
 
 **What to do next:**
-1. Install build dependencies: `sudo dnf install -y cmake ninja-build meson qt6-qtbase-devel qt6-qttools-devel ...` (full list in conversation)
-2. Build the project: `cmake -B build -S . -DCMAKE_BUILD_TYPE=Debug -DSKIP_BUILD_TESTS=OFF`
-3. Build test targets: `cmake --build build --target ServerConfigTests ServerTests`
-4. Run all tests: `ctest --test-dir build/src/unittests --output-on-failure`
-5. Check GitHub CI results (workflows are active, should trigger on push)
-
-**Context:**
-- Fedora 44 x86_64, Qt 6.11.1, libei 1.5.0, libportal 0.9.1 — all from dnf (no source builds needed)
-- All code changes complete for bug #9770 (Parts 1, 2, 3)
-- MSWindowsHook.cpp changes are Windows-specific (can't compile locally on Linux)
-- CI will verify cross-platform compilation
+1. Wait for CI to complete and check results
+2. If CI passes, the fix is complete
+3. Manual testing on Windows with touchscreen still needed
