@@ -243,11 +243,13 @@ void MSWindowsDesks::getCursorPos(int32_t &x, int32_t &y) const
 
 void MSWindowsDesks::fakeKeyEvent(WORD virtualKey, WORD scanCode, DWORD flags, bool /*isAutoRepeat*/) const
 {
+  LOG_DEBUG("desks: fakeKeyEvent vk=0x%02x scan=0x%02x flags=0x%08x", virtualKey, scanCode, flags);
   sendMessage(DESKFLOW_MSG_FAKE_KEY, flags, MAKELPARAM(scanCode, virtualKey));
 }
 
 void MSWindowsDesks::fakeMouseButton(ButtonID button, bool press)
 {
+  LOG_DEBUG("desks: fakeMouseButton button=%d press=%s", button, press ? "true" : "false");
   // the system will swap the meaning of left/right for us if
   // the user has configured a left-handed mouse but we don't
   // want it to swap since we want the handedness of the
@@ -300,6 +302,7 @@ void MSWindowsDesks::fakeMouseButton(ButtonID button, bool press)
 
 void MSWindowsDesks::fakeMouseMove(int32_t x, int32_t y) const
 {
+  LOG_DEBUG("desks: fakeMouseMove x=%d y=%d", x, y);
   sendMessage(DESKFLOW_MSG_FAKE_MOVE, static_cast<WPARAM>(x), static_cast<LPARAM>(y));
 }
 

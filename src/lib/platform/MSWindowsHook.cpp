@@ -145,7 +145,10 @@ void MSWindowsHook::setMode(EHookMode mode)
 
 void MSWindowsHook::setForwardTouchscreenEvents(bool on)
 {
-  g_forwardTouchscreenEvents = on;
+  if (g_forwardTouchscreenEvents != on) {
+    g_forwardTouchscreenEvents = on;
+    LOG_INFO("hook: touchscreen event forwarding %s", on ? "enabled" : "disabled");
+  }
 }
 
 static void keyboardGetState(BYTE keys[256], DWORD vkCode, bool kf_up)
@@ -443,12 +446,20 @@ static LRESULT CALLBACK keyboardLLHook(int code, WPARAM wParam, LPARAM lParam)
 
     bool const injected = info->flags & LLKHF_INJECTED;
     if (!g_isPrimary && injected) {
+      LOG_DEBUG("hook: keyboard injected event passed through (non-primary screen) vk=0x%02x", info->vkCode);
       return CallNextHookEx(g_keyboardLL, code, wParam, lParam);
     }
 
     // On primary screen, skip injected (touchscreen) events when forwarding is disabled
     if (g_isPrimary && injected && !g_forwardTouchscreenEvents) {
+      LOG_DEBUG("hook: keyboard injected event filtered (touch forwarding disabled) vk=0x%02x scan=%u flags=0x%08x",
+                 info->vkCode, info->scanCode, info->flags);
       return CallNextHookEx(g_keyboardLL, code, wParam, lParam);
+    }
+
+    if (g_isPrimary && injected) {
+      LOG_DEBUG("hook: keyboard injected event forwarded (touch forwarding enabled) vk=0x%02x scan=%u",
+                 info->vkCode, info->scanCode);
     }
 
     WPARAM wParam = info->vkCode;
@@ -595,12 +606,21 @@ static LRESULT CALLBACK mouseLLHook(int code, WPARAM wParam, LPARAM lParam)
 
     bool const injected = info->flags & LLMHF_INJECTED;
     if (!g_isPrimary && injected) {
+      LOG_DEBUG("hook: mouse injected event passed through (non-primary screen) msg=0x%04x x=%d y=%d",
+                 wParam, info->pt.x, info->pt.y);
       return CallNextHookEx(g_mouseLL, code, wParam, lParam);
     }
 
     // On primary screen, skip injected (touchscreen) events when forwarding is disabled
     if (g_isPrimary && injected && !g_forwardTouchscreenEvents) {
+      LOG_DEBUG("hook: mouse injected event filtered (touch forwarding disabled) msg=0x%04x x=%d y=%d flags=0x%08x",
+                 wParam, info->pt.x, info->pt.y, info->flags);
       return CallNextHookEx(g_mouseLL, code, wParam, lParam);
+    }
+
+    if (g_isPrimary && injected) {
+      LOG_DEBUG("hook: mouse injected event forwarded (touch forwarding enabled) msg=0x%04x x=%d y=%d",
+                 wParam, info->pt.x, info->pt.y);
     }
 
     int32_t x = static_cast<int32_t>(info->pt.x);

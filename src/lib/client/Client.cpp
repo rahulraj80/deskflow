@@ -238,6 +238,7 @@ void Client::setClipboardDirty(ClipboardID, bool)
 
 void Client::keyDown(KeyID id, KeyModifierMask mask, KeyButton button, const std::string &lang)
 {
+  LOG_DEBUG("client: keyDown id=%d mask=0x%04x button=0x%04x lang=%s", id, mask, button, lang.c_str());
   m_screen->keyDown(id, mask, button, lang);
 }
 
@@ -253,6 +254,7 @@ void Client::keyUp(KeyID id, KeyModifierMask mask, KeyButton button)
 
 void Client::mouseDown(ButtonID id)
 {
+  LOG_DEBUG("client: mouseDown id=%d", id);
   m_screen->mouseDown(id);
 }
 
@@ -263,6 +265,7 @@ void Client::mouseUp(ButtonID id)
 
 void Client::mouseMove(int32_t x, int32_t y)
 {
+  LOG_DEBUG("client: mouseMove x=%d y=%d", x, y);
   m_screen->mouseMove(x, y);
 }
 
