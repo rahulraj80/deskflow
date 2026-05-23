@@ -85,27 +85,31 @@ Add a new server option `forwardTouchscreenEvents` that controls whether touch-g
 - `src/unittests/server/ServerConfigTests.h` — Added 3 new test declarations
 - `src/unittests/server/ServerConfigTests.cpp` — Added 3 new test implementations
 
-### Part 2: Hook Behavior Change (PENDING)
+### Part 2: Hook Behavior Change (IMPLEMENTED)
 
-Modify `MSWindowsHook.cpp` to check `m_forwardTouchscreenEvents` before forwarding touch-generated key events.
+Modified `MSWindowsHook.cpp` to check `g_forwardTouchscreenEvents` before forwarding touch-generated key events.
 
 When the option is `false` (default):
-- Touch-generated key events (identified by `LLKHF_INJECTED` flag in the keyboard hook) should be consumed by the server and NOT forwarded to the client
-- Physical keyboard events should continue to be forwarded normally
+- Touch-generated key events (identified by `LLKHF_INJECTED` flag in the keyboard hook) are consumed by the server and NOT forwarded to the client
+- Physical keyboard events continue to be forwarded normally
+- The `LLKHF_INJECTED` flag is encoded into `lParam` bit 30 for downstream use
 
 When the option is `true`:
 - Current behavior is preserved (all events forwarded)
 
-### Part 3: EiScreen Touch Support (PENDING)
+**Files changed:**
+- `src/lib/platform/MSWindowsHook.h` — Added `setForwardTouchscreenEvents()` declaration
+- `src/lib/platform/MSWindowsHook.cpp` — Added global, setter, filtering in `keyboardLLHook`, injected flag encoding
+- `src/lib/platform/MSWindowsDesks.cpp` — Added option handling in `setOptions()`
 
-Add touch support to the Linux client by binding `EI_DEVICE_CAP_TOUCH` in the libei seat capabilities in `EiScreen.cpp`.
+### Part 3: EiScreen Touch Support (IMPLEMENTED)
 
-Currently line 812 says:
-```cpp
-// we don't care about touch
-```
+Added touch support to the Linux client by binding `EI_DEVICE_CAP_TOUCH` in the libei seat capabilities for non-primary screens.
 
-This needs to be changed to bind the touch capability when the option is enabled.
+**File changed:**
+- `src/lib/platform/EiScreen.cpp` — Added `EI_DEVICE_CAP_TOUCH` binding for non-primary screens
+
+**Note:** Touch event handlers (`EI_EVENT_TOUCH_DOWN/MOTION/UP`) exist but are currently empty (silent discard). Full touch event processing (converting to deskflow mouse events) is a future enhancement.
 
 ## Test Plan
 
@@ -129,8 +133,8 @@ Three new tests in `ServerConfigTests`:
 |-----------|--------|
 | Config option infrastructure | DONE (in patch) |
 | Unit tests | DONE (in patch) |
-| MSWindowsHook.cpp behavior change | PENDING |
-| EiScreen touch support | PENDING |
+| MSWindowsHook.cpp behavior change | DONE |
+| EiScreen touch support | DONE (seat binding) |
 | Manual testing on Windows | PENDING |
 
 ## Related

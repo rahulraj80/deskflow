@@ -5,22 +5,23 @@ This file records what was being done and how to resume if interrupted.
 
 ---
 
-## 2026-05-21 — Session Start
+## 2026-05-23 — Session Resume (x86_64 machine)
 
 **What was being done:**
-- Adapting notes/*.md files from PSync Health project to Deskflow project
-- Understanding the touchscreen input forwarding bug (#9770)
-- Created: `notes/IMPLEMENTATION_SAFETY_PROTOCOL.md`, `notes/PATHS.md`, `notes/DISCUSS.md`
-- Still need to create: `notes/CONVERSATION_LOG.md`, `notes/LEARNINGS.md`
+- Recovered context from CLAUDE.md, notes/ folder, and patch file
+- Patch already applied and pushed (Part 1: config option infrastructure)
+- Implemented Part 2 (MSWindowsHook behavior change) and Part 3 (EiScreen touch support)
+- Pushed all 2 commits to master
 
 **What to do next:**
-1. Create `notes/CONVERSATION_LOG.md` and `notes/LEARNINGS.md`
-2. Begin deep investigation of the touchscreen bug
-3. Trace the event flow from Windows MSWindowsScreen touch input through Server routing to client forwarding
-4. Identify the exact code change needed
+1. Install build dependencies: `sudo dnf install -y cmake ninja-build meson qt6-qtbase-devel qt6-qttools-devel ...` (full list in conversation)
+2. Build the project: `cmake -B build -S . -DCMAKE_BUILD_TYPE=Debug -DSKIP_BUILD_TESTS=OFF`
+3. Build test targets: `cmake --build build --target ServerConfigTests ServerTests`
+4. Run all tests: `ctest --test-dir build/src/unittests --output-on-failure`
+5. Check GitHub CI results (workflows are active, should trigger on push)
 
 **Context:**
-- Bug: When mouse is on Linux client, Windows server touchscreen keystrokes are forwarded to Linux instead of staying on Windows
-- Windows = server, Linux (Wayland/libei) = client
-- EiScreen.cpp explicitly does NOT bind EI_DEVICE_CAP_TOUCH (line 812)
-- Need to understand how Server.cpp routes events when m_active != m_primaryClient
+- Fedora 44 x86_64, Qt 6.11.1, libei 1.5.0, libportal 0.9.1 — all from dnf (no source builds needed)
+- All code changes complete for bug #9770 (Parts 1, 2, 3)
+- MSWindowsHook.cpp changes are Windows-specific (can't compile locally on Linux)
+- CI will verify cross-platform compilation
