@@ -598,6 +598,11 @@ static LRESULT CALLBACK mouseLLHook(int code, WPARAM wParam, LPARAM lParam)
       return CallNextHookEx(g_mouseLL, code, wParam, lParam);
     }
 
+    // On primary screen, skip injected (touchscreen) events when forwarding is disabled
+    if (g_isPrimary && injected && !g_forwardTouchscreenEvents) {
+      return CallNextHookEx(g_mouseLL, code, wParam, lParam);
+    }
+
     int32_t x = static_cast<int32_t>(info->pt.x);
     int32_t y = static_cast<int32_t>(info->pt.y);
     int32_t w = static_cast<int16_t>(HIWORD(info->mouseData));

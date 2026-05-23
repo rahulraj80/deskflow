@@ -19,6 +19,9 @@
 #include "deskflow/Screen.h"
 #include "deskflow/StreamChunker.h"
 #include "deskflow/ipc/CoreIpc.h"
+#ifdef _WIN32
+#include "platform/MSWindowsHook.h"
+#endif
 #include "net/TCPSocket.h"
 #include "server/ClientListener.h"
 #include "server/ClientProxy.h"
@@ -1129,6 +1132,9 @@ void Server::processOptions()
       if (m_forwardTouchscreenEvents) {
         LOG_INFO("touchscreen event forwarding is enabled");
       }
+#ifdef _WIN32
+      MSWindowsHook::setForwardTouchscreenEvents(m_forwardTouchscreenEvents);
+#endif
     }
   }
   if (m_relativeMoves && !newRelativeMoves) {

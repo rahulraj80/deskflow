@@ -103,12 +103,15 @@ Add a new server option `forwardTouchscreenEvents` that controls whether touch-g
 Modified `MSWindowsHook.cpp` to check `g_forwardTouchscreenEvents` before forwarding touch-generated key events.
 
 When the option is `false` (default):
-- Touch-generated key events (identified by `LLKHF_INJECTED` flag in the keyboard hook) are consumed by the server and NOT forwarded to the client
-- Physical keyboard events continue to be forwarded normally
+- Touch-generated key events (identified by `LLKHF_INJECTED` flag in the keyboard hook) are passed through to Windows locally and NOT forwarded to the client
+- Touch-generated mouse events (identified by `LLMHF_INJECTED` flag in the mouse hook) are passed through to Windows locally and NOT forwarded to the client
+- Physical keyboard and mouse events continue to be forwarded normally
 - The `LLKHF_INJECTED` flag is encoded into `lParam` bit 30 for downstream use
 
 When the option is `true`:
 - Current behavior is preserved (all events forwarded)
+
+**Implementation note:** Both the keyboard hook AND the mouse hook must filter injected events. Touchscreen input generates both keyboard events (on-screen keyboard) and mouse events (touch taps/clicks). The original code only filtered keyboard events, which is why touch taps were still being forwarded.
 
 **Files changed:**
 - `src/lib/platform/MSWindowsHook.h` — Added `setForwardTouchscreenEvents()` declaration
