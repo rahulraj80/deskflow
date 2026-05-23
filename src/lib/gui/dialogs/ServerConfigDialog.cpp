@@ -106,8 +106,7 @@ ServerConfigDialog::ServerConfigDialog(QWidget *parent, ServerConfig &config)
   connect(ui->cbRelativeMouseMoves, &QCheckBox::toggled, this, &ServerConfigDialog::toggleRelativeMouseMoves);
   connect(ui->cbEnableClipboard, &QCheckBox::toggled, this, &ServerConfigDialog::toggleClipboard);
   connect(
-      ui->cbForwardTouchscreenEvents, &QCheckBox::toggled, this,
-      &ServerConfigDialog::toggleForwardTouchscreenEvents
+      ui->cbForwardTouchscreenEvents, &QCheckBox::toggled, this, &ServerConfigDialog::toggleForwardTouchscreenEvents
   );
 
   connect(ui->btnBrowseConfigFile, &QPushButton::clicked, this, &ServerConfigDialog::browseConfigFile);
